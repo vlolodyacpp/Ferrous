@@ -83,7 +83,7 @@ enum class TokenKind {
 
     //
     Eof,
-
+    Undefined,
 };
 
 struct Token { 

@@ -1,9 +1,12 @@
 
 #include "lexer.hpp"
 #include "token.hpp"
+#include <cstddef>
 #include <cstdio>
+#include <iostream>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <cctype>
 
@@ -22,22 +25,32 @@ char Lexer::peek_next() const {
     return source[pos + 1]; 
 }
 char Lexer::advance() {
+    if(is_end()) return '\0';
+
     return source[pos++];
 }
 
 void Lexer::skip_comma_space() { 
     while (!is_end()) {
 
-        if(isspace(peek())) { 
+        if(isspace(static_cast<unsigned char>(peek()))) {    // для проверки кириллицы 
             advance();
         } else if (peek() == '/' && peek_next() == '/' ) {
             while (peek() != '\n' && !is_end()) advance(); 
         } else if (peek() == '/' && peek_next() == '*' ) { 
-            while (peek() != '*' && peek() != '/') advance();
-            if(peek() == '*' && peek_next() == '/'){ 
+            advance();
+            advance();
+            while(!is_end() && !(peek() == '*' && peek_next() == '/')){
+                advance();
+            } 
+            if (is_end()) {
+                return;
+            } else { 
                 advance();
                 advance();
             }
+
+
         } else {
             break;
         }
@@ -65,14 +78,92 @@ Token Lexer::lex_ident_or_kw(){
 }
 
 Token Lexer::lex_num() { 
-    return Token{TokenKind::LitInt, "2"};  // tbd - заглуша для теста lex_ident_or_kw
+
+    size_t start = pos;
+    bool is_float = false;
+
+    while(isdigit(peek())) advance();
+
+    if((peek() == '.') && (isdigit(peek_next()))) {
+        advance();
+        while(isdigit(peek())) advance();
+        is_float = true;
+    }
+
+    if(isalpha(peek())) { 
+        size_t strat_suf = pos;
+        while(isalpha(peek()) || isdigit(peek())) advance();
+
+        std::string_view suffix = source.substr(strat_suf, pos - strat_suf);
+        if(!suf.contains(suffix)) { 
+            std::cerr << "invailid suffix: " << suffix;
+            return Token{TokenKind::Undefined, "suffix"};
+        }
+    }
+    
+    std::string_view lexeme = source.substr(start, pos - start);
+    return Token{is_float ? TokenKind::LitFloat : TokenKind::LitInt, lexeme};
+
 }
 
 Token Lexer::lex_str() { 
-    return Token{TokenKind::LitString, "str"};   // tbd - заглуша для теста lex_ident_or_kw
+
+    char quote = peek();
+
+    advance();
+    size_t start_lexeme = pos;
+
+    while(!is_end() && peek() != quote){
+        advance();
+    }
+
+    // если на этом этапе оказались в конце, значит не закрыли
+    if(is_end()) { 
+        std::cerr << "unterminated str literal\n";
+        return Token{TokenKind::Undefined, "err"};
+    }
+
+    if(peek() == quote){
+        std::string_view lexeme = source.substr(start_lexeme, pos - start_lexeme);
+        advance(); // пропускаем вторую кавычку
+        return Token{TokenKind::LitString, lexeme};
+    } else { 
+        std::cerr << "ковычки не одинаковые\n";
+        return Token{TokenKind::Undefined, "err"}; 
+    }
+ 
 }
 Token Lexer::lex_op_or_sep() { 
-    return Token{TokenKind::OpAndAnd, "&&"};   // tbd - заглуша для теста lex_ident_or_kw
+
+    std::string_view lexeme_2_sym = source.substr(pos, 2);
+
+    auto it_ops1 = ops.find(lexeme_2_sym);
+    auto it_sep1 = sep.find(lexeme_2_sym);
+
+    if (it_ops1 != ops.end() && it_sep1 == sep.end()){
+        advance(); 
+        advance();
+        return Token{it_ops1 -> second, lexeme_2_sym};
+    } else if (it_ops1 == ops.end() && it_sep1 != sep.end()){
+        advance(); 
+        advance();
+        return Token{it_sep1 -> second, lexeme_2_sym};
+    } else { 
+
+        std::string_view lexeme_1_sym = source.substr(pos, 1);
+        auto it_ops = ops.find(lexeme_1_sym);
+        auto it_sep = sep.find(lexeme_1_sym);
+
+        if (it_ops != ops.end() && it_sep == sep.end()){
+            advance();
+            return Token{it_ops -> second, lexeme_1_sym};
+        } else if (it_ops == ops.end() && it_sep != sep.end()){
+            advance();
+            return Token{it_sep -> second, lexeme_1_sym};
+        }   
+    }
+    
+    return Token{TokenKind::Undefined, "undefined"};
 }
 
 std::vector<Token> Lexer::tokenize() {
@@ -86,7 +177,7 @@ std::vector<Token> Lexer::tokenize() {
         if(is_end()) break;
 
         char c = Lexer::peek();
-        if (isalpha(c)) {
+        if (isalpha(c) || c == '_') {
             new_token = Lexer::lex_ident_or_kw();
         } else if (isdigit(c)) {
             new_token = Lexer::lex_num();
@@ -108,10 +199,6 @@ std::vector<Token> Lexer::tokenize() {
 
 
 }
-
-
-
-
 
 
 const std::unordered_map<std::string_view, TokenKind> Lexer::keywords = {
@@ -164,4 +251,27 @@ const std::unordered_map<std::string_view, TokenKind> Lexer::ops = {
     {"&&", TokenKind::OpAndAnd},
     {"||", TokenKind::OpOrOr},
     {"!", TokenKind::OpBang},
+};
+
+const std::unordered_map<std::string_view, TokenKind> Lexer::sep = {
+    {";", TokenKind::SepSemicolon},
+    {",", TokenKind::SepComma},
+    {":", TokenKind::SepColon},
+    {".", TokenKind::SepDot},
+    {"{", TokenKind::SepLBrace},
+    {"}", TokenKind::SepRBrace},
+    {"[", TokenKind::SepLBracket},
+    {"]", TokenKind::SepRBracket},
+    {"(", TokenKind::SepLParen},
+    {")", TokenKind::SepRParen},
+    {"->", TokenKind::SepArrow},
+    {"::", TokenKind::SepColonColon},
+    
+};
+
+
+const std::unordered_set<std::string_view> Lexer::suf = { 
+    "i8", "i16", "i32", "i64",
+    "u8", "u16", "u32", "u64",
+    "f32", "f64"
 };

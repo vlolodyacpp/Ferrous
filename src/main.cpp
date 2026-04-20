@@ -1,7 +1,10 @@
 #include "lexer.hpp"
 #include "token.hpp"
 
+#include <fstream>
 #include <iostream>
+#include <sstream>
+#include <string>
 #include <string_view>
 
 static std::string_view kind_name(TokenKind k) {
@@ -66,29 +69,35 @@ static std::string_view kind_name(TokenKind k) {
         case TokenKind::OpOrOr:        return "OpOrOr";
         case TokenKind::OpBang:        return "OpBang";
         case TokenKind::Eof:           return "Eof";
+        case TokenKind::Undefined:     return "undefined";
     }
     return "?";
 }
 
-static void run_case(std::string_view title, std::string_view source) {
-    std::cout << "=== " << title << " ===\n";
-    std::cout << "source: " << source << "\n";
+
+
+int main(int argc, char **argv) {
+    if(argc < 2) { 
+        std::cerr << "usage: Ferrous <file.fer>\n";
+        return 1;
+    }
+
+    std::ifstream in(argv[1]);
+    if(!in) { 
+        std::cerr << "cannot open: " << argv[1] << "\n";
+        return 1;
+    }
+
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    std::string source = ss.str();
 
     Lexer lex(source);
     auto tokens = lex.tokenize();
 
     for (const auto& t : tokens) {
-        std::cout << "  " << kind_name(t.kind) << " '" << t.lexeme << "'\n";
+        std::cout << kind_name(t.kind) << " '" << t.lexeme << "'\n";
     }
-    std::cout << "\n";
-}
-
-int main() {
-    run_case("keywords and ident","let mut x foo_bar main123");
-
-    run_case("builtin types","int32 uint8 float64 bool string");
-
-    run_case("mixed with whitespace","  let   y\t\n foo ");
 
     return 0;
 }

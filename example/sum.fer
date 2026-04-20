@@ -1,0 +1,13 @@
+fn main() -> int32 {
+    let arr: [int32; 5] = [1, 2, 3, 4, 5];
+    let mut sum: int32 = 0
+    let mut i: int32 = 0
+
+    while i < 5 { 
+        sum = sum + arr[i];
+        i = i + 1;
+    }
+
+    print(int_to_string(sum));
+    return 0;
+}

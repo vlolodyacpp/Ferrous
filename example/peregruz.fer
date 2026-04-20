@@ -1,0 +1,21 @@
+fn max(a: int32, b: int32) -> int32 {
+    if a > b { 
+        return a;
+    } else { 
+        return b;
+    }
+}
+
+fn max(a: float64, b: float64) -> float64 {
+    if a > b { 
+        return a;
+    } else { 
+        return b;
+    }
+}
+
+fn main() -> int32 {
+    let i = max(10, 20);
+    let f = max(1.5, 2.5);
+    return 0;
+}
