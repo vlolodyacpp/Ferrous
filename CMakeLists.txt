@@ -9,4 +9,5 @@ include_directories(inc)
 
 file(GLOB_RECURSE SOURCES "src/*.cpp")
 
-add_executable(Ferrous ${SOURCES})
+add_executable(Ferrous ${SOURCES}
+    inc/ast.hpp)
