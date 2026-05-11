@@ -1,6 +1,5 @@
-
-#include "lexer.hpp"
-#include "token.hpp"
+#include "../inc/lexer.hpp"
+#include "../inc/token.hpp"
 #include <cstddef>
 #include <cstdio>
 #include <iostream>

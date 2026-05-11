@@ -1,5 +1,6 @@
-#include "lexer.hpp"
-#include "token.hpp"
+#include "../inc/lexer.hpp"
+#include "../inc/parser.hpp"
+#include "../inc/token.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -98,6 +99,7 @@ int main(int argc, char **argv) {
     for (const auto& t : tokens) {
         std::cout << kind_name(t.kind) << " '" << t.lexeme << "'\n";
     }
+
 
     return 0;
 }
