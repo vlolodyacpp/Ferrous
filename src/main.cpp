@@ -1,12 +1,8 @@
-#include "../inc/lexer.hpp"
-#include "../inc/parser.hpp"
-#include "../inc/token.hpp"
+import std;
+import Ferrous.Token;
+import Ferrous.Lexer;
+import Ferrous.Parser;
 
-#include <fstream>
-#include <iostream>
-#include <sstream>
-#include <string>
-#include <string_view>
 
 static std::string_view kind_name(TokenKind k) {
     switch (k) {

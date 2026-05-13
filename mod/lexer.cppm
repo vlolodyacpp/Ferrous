@@ -1,13 +1,10 @@
-#pragma once 
+export module Ferrous.Lexer;
 
-#include "token.hpp"
-#include <string_view>
-#include <vector>
-#include <unordered_map>
-#include <unordered_set>
+import std;
+import Ferrous.Token;
 
 
-class Lexer { 
+export class Lexer { 
 public:
     explicit Lexer(const std::string_view str) : source(str), pos(0), len(str.length()){}
     std::vector<Token> tokenize();
@@ -22,7 +19,7 @@ private:
     Token lex_num();
     Token lex_str();
     Token lex_op_or_sep();
-    Token make_token(TokenKind, size_t);
+    Token make_token(TokenKind, std::size_t);
 
     void skip_comma_space();
     bool is_end() const;

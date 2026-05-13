@@ -1,14 +1,45 @@
-cmake_minimum_required(VERSION 3.20)
-project(Ferrous CXX)
+cmake_minimum_required(VERSION 3.30)
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
+                                       
+set(CMAKE_CXX_FLAGS "-stdlib=libc++")
+set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++")
 
-include_directories(inc)
+project(Ferrous 
+	VERSION 0.1
+	LANGUAGES CXX
+)
 
-file(GLOB_RECURSE SOURCES "src/*.cpp")
+add_executable(Ferrous
+	src/main.cpp
+	# placeholder for general source files
+	# placeholder for module implementation units
+)
 
-add_executable(Ferrous ${SOURCES}
-    inc/ast.hpp)
+set_target_properties(Ferrous PROPERTIES
+	CXX_MODULE_STD ON
+)
+
+target_compile_features(Ferrous PRIVATE
+	cxx_std_23
+)
+
+
+target_compile_options(Ferrous PRIVATE
+	-Wall -Wextra -Wpedantic -g
+	-stdlib=libc++
+)
+
+target_link_options(Ferrous PRIVATE -stdlib=libc++)
+
+target_sources(Ferrous
+    PRIVATE
+        src/main.cpp
+        src/lexer.cpp
+        src/parser.cpp
+ 	PRIVATE FILE_SET CXX_MODULES FILES
+ 		mod/ast.cppm
+        mod/lexer.cppm
+        mod/parser.cppm
+        mod/token.cppm
+)

@@ -1,6 +1,9 @@
-#include "../inc/parser.hpp"
 
+module Ferrous.Parser;
 
+import std;
+import Ferrous.Token;
+import Ferrous.AST;
 
 bool Parser::is_end() const {
     return tokens[pos].kind == TokenKind::Eof;
@@ -37,7 +40,7 @@ bool Parser::match(TokenKind k) {
 
 Token Parser::expect(TokenKind k) {
     if (!check(k)) {
-        return Token{TokenKind EOF, "err"}; // временная заглушка
+        return Token{TokenKind::Eof, "err"}; // временная заглушка
     }
     return advance();
 }

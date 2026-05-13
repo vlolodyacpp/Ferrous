@@ -1,14 +1,6 @@
-#include "../inc/lexer.hpp"
-#include "../inc/token.hpp"
-#include <cstddef>
-#include <cstdio>
-#include <iostream>
-#include <string_view>
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
-#include <cctype>
+module Ferrous.Lexer;
 
+import std;
 
 bool Lexer::is_end() const {
     return pos >= len;
@@ -32,7 +24,7 @@ char Lexer::advance() {
 void Lexer::skip_comma_space() { 
     while (!is_end()) {
 
-        if(isspace(static_cast<unsigned char>(peek()))) {    // для проверки кириллицы 
+        if(std::isspace(static_cast<unsigned char>(peek()))) {    // для проверки кириллицы 
             advance();
         } else if (peek() == '/' && peek_next() == '/' ) {
             while (peek() != '\n' && !is_end()) advance(); 
@@ -59,9 +51,9 @@ void Lexer::skip_comma_space() {
 
 
 Token Lexer::lex_ident_or_kw(){
-    size_t start = pos;
+    std::size_t start = pos;
 
-    while(!is_end() && (isalnum(peek()) || peek() == '_' )){
+    while(!is_end() && (std::isalnum(peek()) || peek() == '_' )){
         advance(); 
     }
 
@@ -78,20 +70,20 @@ Token Lexer::lex_ident_or_kw(){
 
 Token Lexer::lex_num() { 
 
-    size_t start = pos;
+    std::size_t start = pos;
     bool is_float = false;
 
-    while(isdigit(peek())) advance();
+    while(std::isdigit(peek())) advance();
 
-    if((peek() == '.') && (isdigit(peek_next()))) {
+    if((peek() == '.') && (std::isdigit(peek_next()))) {
         advance();
-        while(isdigit(peek())) advance();
+        while(std::isdigit(peek())) advance();
         is_float = true;
     }
 
-    if(isalpha(peek())) { 
-        size_t strat_suf = pos;
-        while(isalpha(peek()) || isdigit(peek())) advance();
+    if(std::isalpha(peek())) { 
+        std::size_t strat_suf = pos;
+        while(std::isalpha(peek()) || std::isdigit(peek())) advance();
 
         std::string_view suffix = source.substr(strat_suf, pos - strat_suf);
         if(!suf.contains(suffix)) { 
@@ -110,7 +102,7 @@ Token Lexer::lex_str() {
     char quote = peek();
 
     advance();
-    size_t start_lexeme = pos;
+    std::size_t start_lexeme = pos;
 
     while(!is_end() && peek() != quote){
         advance();
@@ -176,9 +168,9 @@ std::vector<Token> Lexer::tokenize() {
         if(is_end()) break;
 
         char c = Lexer::peek();
-        if (isalpha(c) || c == '_') {
+        if (std::isalpha(c) || c == '_') {
             new_token = Lexer::lex_ident_or_kw();
-        } else if (isdigit(c)) {
+        } else if (std::isdigit(c)) {
             new_token = Lexer::lex_num();
         } else if (c == '"' || c == '\''){
             new_token = Lexer::lex_str();

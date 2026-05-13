@@ -1,7 +1,9 @@
-#pragma once
-#include <string_view>
 
-enum class TokenKind { 
+export module Ferrous.Token;
+
+import std;
+
+export enum class TokenKind { 
 
     // идентификаторы 
     Ident, 
@@ -86,7 +88,7 @@ enum class TokenKind {
     Undefined,
 };
 
-struct Token { 
+export struct Token { 
     TokenKind kind;
     std::string_view lexeme;
 };

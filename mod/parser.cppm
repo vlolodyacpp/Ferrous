@@ -1,10 +1,10 @@
-#pragma once
-#include "ast.hpp"
-#include "token.hpp"
-#include <vector>
+export module Ferrous.Parser;
 
+import std;
+import Ferrous.AST;
+import Ferrous.Token;
 
-class Parser {
+export class Parser {
 public:
 
     explicit Parser(std::vector<Token> tokens) : tokens(std::move(tokens)), pos(0) {}
