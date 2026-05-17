@@ -3,6 +3,7 @@ import Ferrous.Token;
 import Ferrous.Lexer;
 import Ferrous.Parser;
 
+using Lexer::TokenKind;
 
 static std::string_view kind_name(TokenKind k) {
     switch (k) {
@@ -89,7 +90,7 @@ int main(int argc, char **argv) {
     ss << in.rdbuf();
     std::string source = ss.str();
 
-    Lexer lex(source);
+    Lexer::Lexer lex(source);
     auto tokens = lex.tokenize();
 
     for (const auto& t : tokens) {

@@ -1,94 +1,97 @@
-
 export module Ferrous.Token;
 
 import std;
 
-export enum class TokenKind { 
+export namespace Lexer {
 
-    // идентификаторы 
-    Ident, 
+    enum class TokenKind {
 
-
-    // ключевые слова 
-    KwLet, // let
-    KwMut, // mut
-    KwFn, // fn
-    KwReturn, // return
-    KwIf, // if
-    KwElse, // else
-    KwWhile, // while
-    KwBreak, // break
-    KwContinue, // continue
-    KwStruct, // struct
-    KwType, // type
-    KwNamespace, // namespace
-    KwAs, // as
-    KwTrue, // true
-    KwFalse, // false
-    KwVoid, // void
-
-    KwInt8,
-    KwInt16,
-    KwInt32,
-    KwInt64,
-    KwUint8,
-    KwUint16,
-    KwUint32,
-    KwUint64,
-
-    KwFloat32,
-    KwFloat64,
-
-    KwBool, 
-    KwString,
+        // идентификаторы
+        Ident,
 
 
-    // литералы
-    LitInt,
-    LitFloat,
-    LitString,
+        // ключевые слова
+        KwLet, // let
+        KwMut, // mut
+        KwFn, // fn
+        KwReturn, // return
+        KwIf, // if
+        KwElse, // else
+        KwWhile, // while
+        KwBreak, // break
+        KwContinue, // continue
+        KwStruct, // struct
+        KwType, // type
+        KwNamespace, // namespace
+        KwAs, // as
+        KwTrue, // true
+        KwFalse, // false
+        KwVoid, // void
+
+        KwInt8,
+        KwInt16,
+        KwInt32,
+        KwInt64,
+        KwUint8,
+        KwUint16,
+        KwUint32,
+        KwUint64,
+
+        KwFloat32,
+        KwFloat64,
+
+        KwBool,
+        KwString,
 
 
-    // разделители
+        // литералы
+        LitInt,
+        LitFloat,
+        LitString,
 
-    SepSemicolon, // ;
-    SepComma,  // , 
-    SepColon,  // :
-    SepDot,    // .
-    SepLBrace, // {
-    SepRBrace, // }
-    SepLBracket, // [
-    SepRBracket, // ]
-    SepLParen,  // (
-    SepRParen, // )
-    SepArrow,  // ->
-    SepColonColon, // ::
 
-    // операторы 
+        // разделители
 
-    OpPlus,
-    OpMinus,
-    OpStar,
-    OpStash,
-    OpPercent,
-    OpEq,
-    OpEqEq,
-    OpBangEq, 
-    OpLt,
-    OpLtEq,
-    OpGt,
-    OpGtEq,
-    OpAndAnd,
-    OpOrOr,
-    OpBang, 
-    
+        SepSemicolon, // ;
+        SepComma,  // ,
+        SepColon,  // :
+        SepDot,    // .
+        SepLBrace, // {
+        SepRBrace, // }
+        SepLBracket, // [
+        SepRBracket, // ]
+        SepLParen,  // (
+        SepRParen, // )
+        SepArrow,  // ->
+        SepColonColon, // ::
 
-    //
-    Eof,
-    Undefined,
-};
+        // операторы
 
-export struct Token { 
-    TokenKind kind;
-    std::string_view lexeme;
-};
+        OpPlus,
+        OpMinus,
+        OpStar,
+        OpStash,
+        OpPercent,
+        OpEq,
+        OpEqEq,
+        OpBangEq,
+        OpLt,
+        OpLtEq,
+        OpGt,
+        OpGtEq,
+        OpAndAnd,
+        OpOrOr,
+        OpBang,
+
+
+        //
+        Eof,
+        Undefined,
+    };
+
+    struct Token {
+        TokenKind kind;
+        std::string_view lexeme;
+    };
+
+} // namespace Lexer

@@ -5,6 +5,8 @@ set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
 set(CMAKE_CXX_FLAGS "-stdlib=libc++")
 set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++")
 
+
+
 project(Ferrous 
 	VERSION 0.1
 	LANGUAGES CXX
@@ -27,7 +29,7 @@ target_compile_features(Ferrous PRIVATE
 
 target_compile_options(Ferrous PRIVATE
 	-Wall -Wextra -Wpedantic -g
-	-stdlib=libc++
+	-stdlib=libc++ -Wno-dev
 )
 
 target_link_options(Ferrous PRIVATE -stdlib=libc++)

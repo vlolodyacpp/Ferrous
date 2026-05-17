@@ -1,52 +1,51 @@
-
 module Ferrous.Parser;
 
 import std;
-import Ferrous.Token;
-import Ferrous.AST;
 
-bool Parser::is_end() const {
-    return tokens[pos].kind == TokenKind::Eof;
-}
+namespace Parser {
 
-Token Parser::peek() const {
-    return tokens[pos];
-}
-
-Token Parser::peek_next() const {
-    if (pos + 1 >= tokens.size()) {
-        return tokens.back();
+    bool Parser::is_end() const {
+        return tokens[pos].kind == Lexer::TokenKind::Eof;
     }
-    return tokens[pos + 1];
-}
 
-Token Parser::advance() {
-    Token cur = tokens[pos];
-    if (!is_end()) {
-        ++pos;
+    Lexer::Token Parser::peek() const {
+        return tokens[pos];
     }
-    return cur;
-}
 
-bool Parser::check(TokenKind k) const {
-    return tokens[pos].kind == k;
-}
-
-bool Parser::match(TokenKind k) {
-    if (!check(k)) return false;
-    advance();
-    return true;
-}
-
-Token Parser::expect(TokenKind k) {
-    if (!check(k)) {
-        return Token{TokenKind::Eof, "err"}; // временная заглушка
+    Lexer::Token Parser::peek_next() const {
+        if (pos + 1 >= tokens.size()) {
+            return tokens.back();
+        }
+        return tokens[pos + 1];
     }
-    return advance();
-}
 
-std::vector<Decl> Parser::parse() {
-    return {};
-}
+    Lexer::Token Parser::advance() {
+        Lexer::Token cur = tokens[pos];
+        if (!is_end()) {
+            ++pos;
+        }
+        return cur;
+    }
 
+    bool Parser::check(Lexer::TokenKind k) const {
+        return tokens[pos].kind == k;
+    }
 
+    bool Parser::match(Lexer::TokenKind k) {
+        if (!check(k)) return false;
+        advance();
+        return true;
+    }
+
+    Lexer::Token Parser::expect(Lexer::TokenKind k) {
+        if (!check(k)) {
+            return Lexer::Token{Lexer::TokenKind::Eof, "err"}; // временная заглушка
+        }
+        return advance();
+    }
+
+    std::vector<Decl> Parser::parse() {
+        return {};
+    }
+
+} // namespace Parser
