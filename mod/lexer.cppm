@@ -7,7 +7,7 @@ export namespace Lexer {
 
     class Lexer {
     public:
-        explicit Lexer(const std::string_view str) : source(str), pos(0), len(str.length()){}
+        explicit Lexer(const std::string_view str) : source(str), pos(0), len(str.length()), line(1), column(1){}
         std::vector<Token> tokenize();
     private:
 
@@ -20,17 +20,19 @@ export namespace Lexer {
         Token lex_num();
         Token lex_str();
         Token lex_op_or_sep();
-        Token make_token(TokenKind, std::size_t);
 
         void skip_comma_space();
-        bool is_end() const;
-        char peek() const;
-        char peek_next() const;
+        [[nodiscard]] bool is_end() const;
+        [[nodiscard]] char peek() const;
+        [[nodiscard]] char peek_next() const;
         char advance();
 
 
         std::string_view source;
         std::size_t pos;
         std::size_t len;
+
+        std::size_t line; // для отладки ошибок
+        std::size_t column;
     };
 } // namespace Lexer

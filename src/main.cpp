@@ -75,14 +75,26 @@ static std::string_view kind_name(TokenKind k) {
 
 
 int main(int argc, char **argv) {
-    if(argc < 2) { 
-        std::cerr << "usage: Ferrous <file.fer>\n";
+    bool dump_tokens = false;
+    const char* path = nullptr;
+
+    for (int i = 1; i < argc; ++i) {
+        std::string_view a = argv[i];
+        if (a == "--dump-tokens") {
+            dump_tokens = true;
+        } else {
+            path = argv[i];
+        }
+    }
+
+    if (!path) {
+        std::cerr << "usage: Ferrous [--dump-tokens] <file.fer>\n";
         return 1;
     }
 
-    std::ifstream in(argv[1]);
-    if(!in) { 
-        std::cerr << "cannot open: " << argv[1] << "\n";
+    std::ifstream in(path);
+    if (!in) {
+        std::cerr << "cannot open: " << path << "\n";
         return 1;
     }
 
@@ -93,10 +105,13 @@ int main(int argc, char **argv) {
     Lexer::Lexer lex(source);
     auto tokens = lex.tokenize();
 
-    for (const auto& t : tokens) {
-        std::cout << kind_name(t.kind) << " '" << t.lexeme << "'\n";
+    if (dump_tokens) {
+        for (const auto& t : tokens) {
+            std::cout << t.line << ':' << t.column << '\t'
+                      << kind_name(t.kind) << "\t'" << t.lexeme << "'\n";
+        }
+        return 0;
     }
-
 
     return 0;
 }

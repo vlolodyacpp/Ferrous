@@ -92,6 +92,9 @@ export namespace Lexer {
     struct Token {
         TokenKind kind;
         std::string_view lexeme;
+
+        std::size_t line; // для отладки ошибок
+        std::size_t column;
     };
 
 } // namespace Lexer
