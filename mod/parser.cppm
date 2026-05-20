@@ -15,6 +15,7 @@ export namespace Parser {
         // для отладки(временно)
         TypeRef debug_parse_type() { return parse_type(); }
         Expr    debug_parse_expr() { return parse_expr(0); }
+        Stmt    debug_parse_stmt() { return parse_stmt(); }
 
     private:
 

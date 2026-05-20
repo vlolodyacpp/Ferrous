@@ -181,10 +181,63 @@ static void print_expr(const Parser::Expr& e, std::ostream& os, int depth) {
     }, e.node);
 }
 
+static void print_stmt(const Parser::Stmt& s, std::ostream& os, int depth) {
+    print_indent(os, depth);
+    std::visit([&](const auto& n) {
+        using T = std::decay_t<decltype(n)>;
+        if constexpr (std::is_same_v<T, Parser::LetStmt>) {
+            os << "Let " << (n.is_mut ? "mut " : "") << n.name << '\n';
+            if (n.type) {
+                print_indent(os, depth + 1); os << "type:\n";
+                print_type(*n.type, os, depth + 2);
+            }
+            print_indent(os, depth + 1); os << "init:\n";
+            print_expr(*n.expr_init, os, depth + 2);
+        } else if constexpr (std::is_same_v<T, Parser::ExprStmt>) {
+            os << "ExprStmt\n";
+            print_expr(*n.expr, os, depth + 1);
+        } else if constexpr (std::is_same_v<T, Parser::BlockStmt>) {
+            os << "Block (" << n.elems.size() << ")\n";
+            for (const auto& st : n.elems) print_stmt(st, os, depth + 1);
+        } else if constexpr (std::is_same_v<T, Parser::ReturnStmt>) {
+            os << "Return\n";
+            if (n.value) {
+                print_expr(*n.value, os, depth + 1);
+            }
+        } else if constexpr (std::is_same_v<T, Parser::BreakStmt>) {
+            os << "Break\n";
+        } else if constexpr (std::is_same_v<T, Parser::ContinueStmt>) {
+            os << "Continue\n";
+        } else if constexpr (std::is_same_v<T, Parser::NullStmt>) {
+            os << "Null\n";
+        } else if constexpr (std::is_same_v<T, Parser::IfStmt>) {
+            os << "If\n";
+            print_indent(os, depth + 1); os << "cond:\n";
+            print_expr(*n.condition, os, depth + 2);
+            print_indent(os, depth + 1); os << "then:\n";
+            print_stmt(*n.then_body, os, depth + 2);
+            if (n.else_body) {
+                print_indent(os, depth + 1); os << "else:\n";
+                print_stmt(*n.else_body, os, depth + 2);
+            }
+        } else if constexpr (std::is_same_v<T, Parser::WhileStmt>) {
+            os << "While\n";
+            print_indent(os, depth + 1); os << "cond:\n";
+            print_expr(*n.condition, os, depth + 2);
+            print_indent(os, depth + 1); os << "body:\n";
+            print_stmt(*n.body, os, depth + 2);
+        } else {
+            os << "<unsupported stmt>\n";
+        }
+    }, s.node);
+}
+
+
 int main(int argc, char **argv) {
     bool dump_tokens = false;
     bool dump_type   = false;
     bool dump_expr   = false;
+    bool dump_stmt   = false;
     const char* path = nullptr;
 
     for (int i = 1; i < argc; ++i) {
@@ -192,6 +245,7 @@ int main(int argc, char **argv) {
         if      (a == "--dump-tokens") dump_tokens = true;
         else if (a == "--dump-type")   dump_type   = true;
         else if (a == "--dump-expr")   dump_expr   = true;
+        else if (a == "--dump-stmt")   dump_stmt   = true;
         else                           path = argv[i];
     }
 
@@ -232,6 +286,13 @@ int main(int argc, char **argv) {
         Parser::Parser p(std::move(tokens));
         Parser::Expr e = p.debug_parse_expr();
         print_expr(e, std::cout, 0);
+        return 0;
+    }
+
+    if (dump_stmt) {
+        Parser::Parser p(std::move(tokens));
+        Parser::Stmt s = p.debug_parse_stmt();
+        print_stmt(s, std::cout, 0);
         return 0;
     }
 

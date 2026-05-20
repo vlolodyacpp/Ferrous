@@ -93,7 +93,7 @@ namespace Parser {
     }
 
 
-    // парсинг выражений
+    // парсинг типов
     TypeRef Parser::parse_type() {
         const auto t = peek();
         if (is_builtin_type(t.kind)) {
@@ -123,7 +123,7 @@ namespace Parser {
         return TypeRef{BuiltinTypeRef{TokenKind::Undefined}};
     }
 
-
+    // парсинг выражений
     Expr Parser::parse_prefix() {
         const auto t = peek();
 
@@ -249,7 +249,7 @@ namespace Parser {
         }
     }
 
-
+    // парсинг инструкций
     Expr Parser::parse_expr(int min_prec) {
         Expr lhs = parse_prefix();
         while (true) {
@@ -273,7 +273,134 @@ namespace Parser {
     }
 
 
+    Stmt Parser::parse_stmt() {
+        switch (const auto token = peek(); token.kind) {
+            case TokenKind::KwLet:
+                return Stmt {parse_let()};
+            case TokenKind::KwReturn:
+                return Stmt {parse_return()};
+            case TokenKind::KwIf:
+                return Stmt {parse_if()};
+            case TokenKind::KwWhile:
+                return Stmt {parse_while()};
+            case TokenKind::KwBreak:
+                advance();
+                expect(TokenKind::SepSemicolon);
+                return Stmt{BreakStmt {}};
+            case TokenKind::KwContinue:
+                advance();
+                expect(TokenKind::SepSemicolon);
+                return Stmt{ContinueStmt {}};
+            case TokenKind::SepLBrace:
+                return Stmt{parse_block()};
+            case TokenKind::SepSemicolon:
+                advance();
+                return Stmt{NullStmt {}};
+            default:
+                Expr e = parse_expr(0);
+                expect(TokenKind::SepSemicolon);
+                return Stmt{ExprStmt{
+                    std::make_unique<Expr>(std::move(e))
+                }};
+        }
+    }
 
+    LetStmt Parser::parse_let() {
+        // "let" [ "mut" ] IDENT [ ":" Type ] "=" Expr ";" ;
+        expect(TokenKind::KwLet);
+        bool is_mut = match(TokenKind::KwMut);
+        Lexer::Token name = expect(TokenKind::Ident);
+
+        std::optional<TypeRef> type;
+        if (match(TokenKind::SepColon)) {
+            type = parse_type();
+        }
+        expect(TokenKind::OpEq);
+        Expr init = parse_expr(0);
+        expect(TokenKind::SepSemicolon);
+        return LetStmt{
+            is_mut,
+            name.lexeme,
+            std::move(type),
+            std::make_unique<Expr>(std::move(init))
+        };
+    }
+
+    ReturnStmt Parser::parse_return() {
+        // "return" [ Expr ] ";" ;
+        expect(TokenKind::KwReturn);
+        if (match(TokenKind::SepSemicolon)) {
+            return ReturnStmt {std::nullopt};
+        }
+        Expr e = parse_expr(0);
+        expect(TokenKind::SepSemicolon);
+        return ReturnStmt{std::move(e)};
+    }
+
+
+    BlockStmt Parser::parse_block() {
+        // "{" { Stmt } "}" ;
+        expect(TokenKind::SepLBrace);
+        std::vector<Stmt> elems;
+        while (!check(TokenKind::SepRBrace) && !is_end()) {
+            elems.push_back(parse_stmt());
+        }
+        expect(TokenKind::SepRBrace);
+        return BlockStmt{std::move(elems)};
+    }
+
+
+    IfStmt Parser::parse_if() {
+        // "if" ExprNoStruct Block [ "else" ( IfStmt | Block ) ] ;
+        expect(TokenKind::KwIf);
+
+        auto conditional = parse_expr(0);
+        auto then_body = parse_block();
+        auto then_stmt = std::make_unique<Stmt>(Stmt{std::move(then_body)});
+        std::unique_ptr<Stmt> else_stmt = nullptr;
+
+        if (match(TokenKind::KwElse)) {
+            if (check(TokenKind::KwIf)) {
+                auto else_if_block = parse_if();
+                else_stmt = std::make_unique<Stmt>(std::move(else_if_block));
+            } else {
+                auto else_block = parse_block();
+                else_stmt = std::make_unique<Stmt>(std::move(else_block));
+            }
+        }
+
+        return IfStmt{
+            std::make_unique<Expr>(std::move(conditional)),
+            std::move(then_stmt),
+            std::move(else_stmt)
+        };
+
+    }
+
+    WhileStmt Parser::parse_while() {
+        // "while" ExprNoStruct Block;
+        expect(TokenKind::KwWhile);
+
+        auto conditional = parse_expr(0);
+        auto then_body = parse_block();
+        auto then_stmt = std::make_unique<Stmt>(Stmt{std::move(then_body)});
+
+        return WhileStmt{
+            std::make_unique<Expr>(std::move(conditional)),
+            std::move(then_stmt),
+        };
+    }
+
+    // FnDecl Parser::parse_fn() {
+    //     expect(TokenKind::KwFn);
+    //     auto name = expect(TokenKind::Ident);
+    //
+    //     expect(TokenKind::SepLParen);
+    //     std::vector<std::pair<std::string, std::string>> params;
+    //     while (!check(TokenKind::SepRParen) && !is_end()) {
+    //         params.push_back();
+    //     }
+    // }
 
 
 
