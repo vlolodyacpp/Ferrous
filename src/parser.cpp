@@ -5,7 +5,7 @@ import std;
 namespace Parser {
     namespace {
         using TokenKind = Lexer::TokenKind;
-        const std::unordered_set<Lexer::TokenKind> builtin_type = {
+        const std::unordered_set builtin_type = {
             TokenKind::KwInt8, TokenKind::KwInt16, TokenKind::KwInt32, TokenKind::KwInt64,
             TokenKind::KwUint8, TokenKind::KwUint16, TokenKind::KwUint32, TokenKind::KwUint64,
             TokenKind::KwFloat32, TokenKind::KwFloat64, TokenKind::KwBool, TokenKind::KwString, TokenKind::KwVoid,
@@ -108,7 +108,7 @@ namespace Parser {
             advance();
             TypeRef elem = parse_type();
 
-            expect(TokenKind::SepComma);
+            expect(TokenKind::SepSemicolon);
             Lexer::Token token = expect(TokenKind::LitInt);
 
             expect(TokenKind::SepRBracket);
@@ -161,10 +161,25 @@ namespace Parser {
             advance();
             return parse_postfix(Expr{LitBoolExpr{false}});
         }
+        if (t.kind == TokenKind::SepLBracket) {
+            advance();
+            std::vector<Expr> elems;
+            if (!check(TokenKind::SepRBracket)) {
+                while (true) {
+                    elems.push_back(parse_expr(0));
+                    if (!match(TokenKind::SepComma)) break;
+                    if (check(TokenKind::SepRBracket)) break;
+                }
+            }
+            expect(TokenKind::SepRBracket);
+            return parse_postfix(Expr{ArrayLitExpr{std::move(elems)}});
+        }
         if (t.kind == TokenKind::Ident) {
+
             advance();
             return parse_postfix(Expr{IdentExpr{t.lexeme}});
         }
+
 
 
         std::cerr << "parse error at" << t.line << ":" << t.column <<
@@ -391,23 +406,125 @@ namespace Parser {
         };
     }
 
-    // FnDecl Parser::parse_fn() {
-    //     expect(TokenKind::KwFn);
-    //     auto name = expect(TokenKind::Ident);
-    //
-    //     expect(TokenKind::SepLParen);
-    //     std::vector<std::pair<std::string, std::string>> params;
-    //     while (!check(TokenKind::SepRParen) && !is_end()) {
-    //         params.push_back();
-    //     }
-    // }
+    FnDecl Parser::parse_fn() {
+        // "fn" IDENT "(" [ ParamList ] ")" [ "->" Type ] Block ;`
+        expect(TokenKind::KwFn);
+        auto name = expect(TokenKind::Ident);
 
+        expect(TokenKind::SepLParen);
 
+        // Param { "," Param } [ "," ] ;
+        std::vector<std::pair<std::string_view, TypeRef>> params;
+        if (true) {
+            while (!check(TokenKind::SepRParen)) {
+                Lexer::Token param_name = expect(TokenKind::Ident);
+                expect (TokenKind::SepColon);
+                auto param_type = parse_type();
+                params.emplace_back(param_name.lexeme, std::move(param_type));
 
+                if (!match(TokenKind::SepComma)) break;
+                if (check(TokenKind::SepRParen)) break;
+            }
+        }
 
+        expect(TokenKind::SepRParen);
+
+        std::optional<TypeRef> return_type;
+        if (match(TokenKind::SepArrow)) {
+            return_type = parse_type();
+        }
+
+        auto body = parse_block();
+
+        return FnDecl{
+            name.lexeme,
+            std::move(params),
+            std::move(return_type),
+            std::move(body)
+        };
+    }
+
+    StructDecl Parser::parse_struct() {
+
+        expect(TokenKind::KwStruct);
+        auto name = expect(TokenKind::Ident);
+        expect(TokenKind::SepLBrace);
+
+        // Param { "," Param } [ "," ] ;
+        std::vector<std::pair<std::string_view, TypeRef>> fields;
+        if (!check(TokenKind::SepRBrace)) {
+            while (true) {
+                Lexer::Token param_name = expect(TokenKind::Ident);
+                expect (TokenKind::SepColon);
+                auto param_type = parse_type();
+                fields.emplace_back(param_name.lexeme, std::move(param_type));
+
+                if (!match(TokenKind::SepComma)) break;
+                if (check(TokenKind::SepRBrace)) break;
+            }
+        }
+
+        expect(TokenKind::SepRBrace);
+
+        return StructDecl{
+            name.lexeme,
+            std::move(fields)
+        };
+    }
+    TypeAliasDecl Parser::parse_type_alias() {
+        // "type" IDENT "=" Type ";" ;
+        expect(TokenKind::KwType);
+        auto name = expect(TokenKind::Ident);
+        expect(TokenKind::OpEq);
+        auto type = parse_type();
+        expect(TokenKind::SepSemicolon);
+
+        return TypeAliasDecl{
+            name.lexeme,
+            std::move(type)
+        };
+    }
+
+    NameSpaceDecl Parser::parse_namespace() {
+        // "namespace" IDENT "{" { Decl } "}" ;
+        expect(TokenKind::KwNamespace);
+        auto name = expect(TokenKind::Ident);
+        expect(TokenKind::SepLBrace);
+
+        std::vector<Decl> decls;
+        while (!check(TokenKind::SepRBrace) && !is_end()) {
+            decls.push_back(parse_decl());
+        }
+        expect(TokenKind::SepRBrace);
+        return NameSpaceDecl{
+            name.lexeme,
+            std::move(decls)
+        };
+    }
+
+    Decl Parser::parse_decl() {
+        switch (auto t = peek(); t.kind) {
+            case TokenKind::KwFn:
+                return Decl{parse_fn()};
+            case TokenKind::KwStruct:
+                return Decl{parse_struct()};
+            case TokenKind::KwType:
+                return Decl{parse_type_alias()};
+            case TokenKind::KwNamespace:
+                return Decl{parse_namespace()};
+            default:
+                std::cerr << "parse error at " << t.line << ":" << t.column << " expected declaration, got `" << t.lexeme << "`" << std::endl;
+                advance();
+                return Decl{FnDecl{}};
+        }
+    }
 
     std::vector<Decl> Parser::parse() {
-        return {};
+        std::vector<Decl> decls;
+        while (!is_end()) {
+            decls.push_back(parse_decl());
+        }
+        return decls;
     }
 
 } // namespace Parser

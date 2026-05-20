@@ -1,0 +1,23 @@
+type Meters = int32;
+
+struct Point {
+    x: float64,
+    y: float64,
+}
+
+namespace math {
+    fn square(n: int32) -> int32 {
+        return n * n;
+    }
+
+    namespace nested {
+        fn id(n: int32) -> int32 {
+            return n;
+        }
+    }
+}
+
+fn main() -> int32 {
+    return 0;
+}
+
