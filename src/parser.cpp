@@ -126,7 +126,7 @@ namespace Parser {
     // парсинг выражений
     Expr Parser::parse_prefix() {
         const auto t = peek();
-
+        const auto t_next  = peek_next();
         if (t.kind == TokenKind::SepLParen) {
             advance();
             auto inner = parse_expr(0);
@@ -175,7 +175,9 @@ namespace Parser {
             return parse_postfix(Expr{ArrayLitExpr{std::move(elems)}});
         }
         if (t.kind == TokenKind::Ident) {
-
+            if (!is_conditional && t_next.kind == TokenKind::SepLBrace) {
+                return parse_postfix(parse_struct_lit());
+            }
             advance();
             return parse_postfix(Expr{IdentExpr{t.lexeme}});
         }
@@ -264,7 +266,30 @@ namespace Parser {
         }
     }
 
-    // парсинг инструкций
+    Expr Parser::parse_struct_lit() {
+        auto name = expect(TokenKind::Ident);
+        expect(TokenKind::SepLBrace);
+
+        std::vector<std::pair<std::string_view, std::unique_ptr<Expr>>> fields;
+        if (!check(TokenKind::SepRBrace)) {
+            while (true) {
+                auto func_name = expect(TokenKind::Ident);
+                expect(TokenKind::SepColon);
+                Expr val = parse_expr(0);
+                fields.emplace_back(
+                    func_name.lexeme,
+                    std::make_unique<Expr>(std::move(val))
+                );
+
+                if (!match(TokenKind::SepComma)) break;
+                if (check(TokenKind::SepRBrace)) break;   // trailing comma
+            }
+        }
+        expect(TokenKind::SepRBrace);
+
+        return Expr{ StructLitExpr{ name.lexeme, std::move(fields) } };
+    }
+
     Expr Parser::parse_expr(int min_prec) {
         Expr lhs = parse_prefix();
         while (true) {
@@ -369,7 +394,11 @@ namespace Parser {
         // "if" ExprNoStruct Block [ "else" ( IfStmt | Block ) ] ;
         expect(TokenKind::KwIf);
 
+        bool prev = is_conditional;
+        is_conditional = true;
         auto conditional = parse_expr(0);
+        is_conditional = prev;
+
         auto then_body = parse_block();
         auto then_stmt = std::make_unique<Stmt>(Stmt{std::move(then_body)});
         std::unique_ptr<Stmt> else_stmt = nullptr;
@@ -396,7 +425,11 @@ namespace Parser {
         // "while" ExprNoStruct Block;
         expect(TokenKind::KwWhile);
 
+        bool prev = is_conditional;
+        is_conditional = true;
         auto conditional = parse_expr(0);
+        is_conditional = prev;
+
         auto then_body = parse_block();
         auto then_stmt = std::make_unique<Stmt>(Stmt{std::move(then_body)});
 
@@ -471,6 +504,8 @@ namespace Parser {
             std::move(fields)
         };
     }
+
+
     TypeAliasDecl Parser::parse_type_alias() {
         // "type" IDENT "=" Type ";" ;
         expect(TokenKind::KwType);

@@ -21,7 +21,7 @@ export namespace Parser {
 
         std::vector<Lexer::Token> tokens;
         std::size_t pos = 0;
-
+        bool is_conditional = false;
 
         Lexer::Token peek() const;
         Lexer::Token peek_next() const;
@@ -57,6 +57,7 @@ export namespace Parser {
         Expr parse_expr(int);
         Expr parse_prefix();
         Expr parse_postfix(Expr);
+        Expr parse_struct_lit();
 
         int get_infix_prec(Lexer::TokenKind);
         bool is_right_assoc(Lexer::TokenKind);

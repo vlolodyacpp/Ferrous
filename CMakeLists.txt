@@ -14,7 +14,7 @@ project(Ferrous
 
 add_executable(Ferrous
 	src/main.cpp
-	# placeholder for general source files
+		# placeholder for general source files
 	# placeholder for module implementation units
 )
 
@@ -39,9 +39,11 @@ target_sources(Ferrous
         src/main.cpp
         src/lexer.cpp
         src/parser.cpp
+		src/printer.cpp
  	PRIVATE FILE_SET CXX_MODULES FILES
  		mod/ast.cppm
         mod/lexer.cppm
         mod/parser.cppm
         mod/token.cppm
+		mod/printer.cppm
 )
