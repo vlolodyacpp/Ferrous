@@ -70,7 +70,7 @@ export namespace Lexer {
         OpPlus,
         OpMinus,
         OpStar,
-        OpStash,
+        OpSlash,
         OpPercent,
         OpEq,
         OpEqEq,

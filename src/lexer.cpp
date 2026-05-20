@@ -246,7 +246,7 @@ namespace Lexer {
         {"+", TokenKind::OpPlus},
         {"-", TokenKind::OpMinus},
         {"*", TokenKind::OpStar},
-        {"/", TokenKind::OpStash},
+        {"/", TokenKind::OpSlash},
         {"%", TokenKind::OpPercent},
         {"=", TokenKind::OpEq},
         {"==", TokenKind::OpEqEq},

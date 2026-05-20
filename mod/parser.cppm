@@ -12,6 +12,10 @@ export namespace Parser {
         explicit Parser(std::vector<Lexer::Token> tokens) : tokens(std::move(tokens)), pos(0) {}
         std::vector<Decl> parse();
 
+        // для отладки(временно)
+        TypeRef debug_parse_type() { return parse_type(); }
+        Expr    debug_parse_expr() { return parse_expr(0); }
+
     private:
 
         std::vector<Lexer::Token> tokens;
@@ -51,7 +55,7 @@ export namespace Parser {
         // выражения
         Expr parse_expr(int);
         Expr parse_prefix();
-        Expr parse_postfix(Expr lhs);
+        Expr parse_postfix(Expr);
 
         int get_infix_prec(Lexer::TokenKind);
         bool is_right_assoc(Lexer::TokenKind);
