@@ -18,6 +18,7 @@ export namespace Lexer {
 
         Token lex_ident_or_kw();
         Token lex_num();
+        Token lex_char();
         Token lex_str();
         Token lex_op_or_sep();
 

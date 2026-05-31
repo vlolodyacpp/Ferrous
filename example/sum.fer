@@ -8,6 +8,12 @@ fn main() -> int32 {
         i = i + 1;
     }
 
+    let c: char = 'sddfsasts';
+
+    let num: int32 = 0b01110;
+    let num2: float32 = 1.e-2;
+
+
     print(int_to_string(sum));
     return 0;
 }

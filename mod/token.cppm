@@ -28,6 +28,8 @@ export namespace Lexer {
         KwFalse, // false
         KwVoid, // void
 
+
+        KwChar, // char
         KwInt8,
         KwInt16,
         KwInt32,
@@ -44,10 +46,12 @@ export namespace Lexer {
         KwString,
 
 
+
         // литералы
         LitInt,
         LitFloat,
         LitString,
+        LitChar,
 
 
         // разделители

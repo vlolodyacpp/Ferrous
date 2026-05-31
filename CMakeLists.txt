@@ -6,7 +6,6 @@ set(CMAKE_CXX_FLAGS "-stdlib=libc++")
 set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++")
 
 
-
 project(Ferrous 
 	VERSION 0.1
 	LANGUAGES CXX
@@ -40,10 +39,12 @@ target_sources(Ferrous
         src/lexer.cpp
         src/parser.cpp
 		src/printer.cpp
+		src/semantic.cpp
  	PRIVATE FILE_SET CXX_MODULES FILES
  		mod/ast.cppm
         mod/lexer.cppm
         mod/parser.cppm
         mod/token.cppm
 		mod/printer.cppm
+		mod/semantic.cppm
 )

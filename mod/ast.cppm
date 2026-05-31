@@ -11,6 +11,7 @@ export namespace Parser {
     struct Decl;
 
 
+    
     struct BuiltinTypeRef  {    // def type
         Lexer::TokenKind type_kind;
     };
@@ -44,6 +45,14 @@ export namespace Parser {
 
     struct LitStringExpr { // "string"
         std::string_view value;
+    };
+
+    struct LitCharExpr {
+        std::string_view value;
+    };
+
+    struct ErrorExpr {
+        Lexer::Token token;
     };
 
     struct IdentExpr {     // ident
@@ -101,9 +110,9 @@ export namespace Parser {
     };
 
     struct Expr {
-        std::variant<LitIntExpr, LitFloatExpr, LitBoolExpr, LitStringExpr,
-        PathExpr, IdentExpr, BinaryExpr, UnaryExpr, GroupExpr, CastExpr, CallExpr,
-        IndexExpr, FieldExpr, ArrayLitExpr, StructLitExpr > node;
+        std::variant<LitIntExpr, LitFloatExpr, LitBoolExpr, LitStringExpr, LitCharExpr,
+        ErrorExpr, PathExpr, IdentExpr, BinaryExpr, UnaryExpr, GroupExpr, CastExpr, CallExpr,
+        IndexExpr, FieldExpr, ArrayLitExpr, StructLitExpr> node;
     };
 
 

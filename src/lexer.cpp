@@ -32,7 +32,7 @@ namespace Lexer {
         return c;
     }
 
-    
+
     void Lexer::skip_comma_space() {
         while (!is_end()) {
 
@@ -84,14 +84,45 @@ namespace Lexer {
         const std::size_t start_line = line;
         const std::size_t start_column = column;
         bool is_float = false;
+
+
+        // hex/binary rule
+        if (peek() == '0' && (peek_next() == 'x' || peek_next() == 'X')) {
+            advance();
+            advance();          // 0x, 0X
+            while (std::isxdigit(peek())) advance();
+        }
+        if (peek() == '0' && (peek_next() == 'b' || peek_next() == 'B')) {
+            advance();
+            advance();          // 0b, 0B
+            while (peek() == '0' || peek() == '1') advance();
+        }
+
+
         while (std::isdigit(peek())) advance();
 
-        if ((peek() == '.') && (std::isdigit(peek_next()))) {
+        // float/exp
+        if ((peek() == '.' && std::isdigit(peek_next())) || peek_next() == 'e' || peek_next() == 'E') {
             advance();
             while (std::isdigit(peek())) advance();
             is_float = true;
         }
 
+        // экспоненциальная запись
+        if (peek() == 'e' || peek() == 'E') {
+            is_float = true;
+            advance();
+            if (peek() == '+' || peek() == '-') {
+                advance();
+            }
+            if (!std::isdigit(peek())) {
+                std::cerr << "invalid float literal: expected digit after exponent\n";
+                return Token{TokenKind::Undefined, "err", start_line, start_column};
+            }
+            while (std::isdigit(peek())) advance();
+        }
+
+        // суфикс
         if (std::isalpha(peek())) {
             const std::size_t start_suf = pos;
             while (std::isalpha(peek()) || std::isdigit(peek())) advance();
@@ -106,8 +137,59 @@ namespace Lexer {
         const std::string_view lexeme = source.substr(start, pos - start);
         return Token{is_float ? TokenKind::LitFloat : TokenKind::LitInt,
             lexeme, start_line, start_column};
-
     }
+
+    Token Lexer::lex_char() {
+        const std::size_t start_line = line;
+        const std::size_t start_column = column;
+
+        advance();
+        const std::size_t start_pos = pos;
+
+        if (peek() == '\0' || peek() == '\n') {
+            std::cerr << "unterminated char literal\n";
+            return Token{TokenKind::Undefined, "err", start_line, start_column};
+        }
+
+        // пустой char
+        if (peek() == '\'') {
+            advance();
+            std::cerr << "empty char literal\n";
+            return Token{TokenKind::Undefined, "err", start_line, start_column};
+        }
+
+        // escape последовательности
+        if (peek() == '\\') {
+            advance();
+            if (peek() == '\0' || peek() == '\n') {
+                std::cerr << "unterminated char literal\n";
+                return Token{TokenKind::Undefined, "err", start_line, start_column};
+            }
+            advance();
+        } else {
+            advance();
+        }
+
+
+        // проверка на адекватность
+        if (peek() != '\'') {
+            while (!is_end() && peek() != '\n' && peek() != '\'') {
+                advance();
+            }
+            if (peek() == '\'') {
+                advance();
+                std::cerr << "char literal too long\n";
+                return Token{TokenKind::Undefined, "err", start_line, start_column};
+            }
+            std::cerr << "unterminated char literal\n";
+            return Token{TokenKind::Undefined, "err", start_line, start_column};
+        }
+
+        const std::string_view lexeme = source.substr(start_pos, pos - start_pos);
+        advance(); // пропускаем вторую кавычку
+        return Token{TokenKind::LitChar, lexeme, start_line, start_column};
+    }
+
 
     Token Lexer::lex_str() {
 
@@ -188,8 +270,10 @@ namespace Lexer {
                 new_token = lex_ident_or_kw();
             } else if (std::isdigit(c)) {
                 new_token = lex_num();
-            } else if (c == '"' || c == '\'') {
+            } else if (c == '"') {
                 new_token = lex_str();
+            } else if (c == '\'') {
+                new_token = lex_char();
             } else {
                 new_token = lex_op_or_sep();
             }
@@ -225,7 +309,7 @@ namespace Lexer {
         {"true", TokenKind::KwTrue},
         {"false", TokenKind::KwFalse},
         {"void", TokenKind::KwVoid},
-
+        {"char", TokenKind::KwChar},
 
         {"int8", TokenKind::KwInt8},
         {"int16", TokenKind::KwInt16},

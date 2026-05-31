@@ -9,6 +9,7 @@ namespace Parser {
             TokenKind::KwInt8, TokenKind::KwInt16, TokenKind::KwInt32, TokenKind::KwInt64,
             TokenKind::KwUint8, TokenKind::KwUint16, TokenKind::KwUint32, TokenKind::KwUint64,
             TokenKind::KwFloat32, TokenKind::KwFloat64, TokenKind::KwBool, TokenKind::KwString, TokenKind::KwVoid,
+            TokenKind::KwChar,
         };
         bool is_builtin_type(Lexer::TokenKind k) {
             if (builtin_type.contains(k)) return true;
@@ -120,6 +121,7 @@ namespace Parser {
 
         std::cerr << "parse error at" << t.line << ":" << t.column <<
             "expected type, got `" << t.lexeme << "`\n";
+        advance();
         return TypeRef{BuiltinTypeRef{TokenKind::Undefined}};
     }
 
@@ -153,6 +155,10 @@ namespace Parser {
             advance();
             return parse_postfix(Expr{LitStringExpr{t.lexeme}});
         }
+        if (t.kind == TokenKind::LitChar) {
+            advance();
+            return parse_postfix(Expr{LitCharExpr{t.lexeme}});
+        }
         if (t.kind == TokenKind::KwTrue) {
             advance();
             return parse_postfix(Expr{LitBoolExpr{true}});
@@ -184,9 +190,15 @@ namespace Parser {
 
 
 
+        if (t.kind == TokenKind::Undefined) {
+            advance();
+            return Expr{ErrorExpr{t}};
+        }
+
         std::cerr << "parse error at" << t.line << ":" << t.column <<
             "expected prefix, got `" << t.lexeme << "`\n";
-        return Expr{LitIntExpr{"0"}};
+        advance();
+        return Expr{ErrorExpr{t}};
     }
 
     Expr Parser::parse_postfix(Expr lhs) {

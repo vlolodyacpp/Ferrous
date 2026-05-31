@@ -1,5 +1,5 @@
 module Ferrous.Printer;
-
+import Ferrous.Lexer;
 
 namespace Printer {
 
@@ -34,11 +34,13 @@ namespace Printer {
             case TokenKind::KwUint64:      return "KwUint64";
             case TokenKind::KwFloat32:     return "KwFloat32";
             case TokenKind::KwFloat64:     return "KwFloat64";
+            case TokenKind::KwChar:        return "KwChar";
             case TokenKind::KwBool:        return "KwBool";
             case TokenKind::KwString:      return "KwString";
             case TokenKind::LitInt:        return "LitInt";
             case TokenKind::LitFloat:      return "LitFloat";
             case TokenKind::LitString:     return "LitString";
+            case TokenKind::LitChar:       return "LitChar";
             case TokenKind::SepSemicolon:  return "SepSemicolon";
             case TokenKind::SepComma:      return "SepComma";
             case TokenKind::SepColon:      return "SepColon";
@@ -127,6 +129,10 @@ namespace Printer {
                 os << "LitString \"" << n.value << "\"\n";
             } else if constexpr (std::is_same_v<T, Parser::IdentExpr>) {
                 os << "Ident " << n.value << '\n';
+            } else if constexpr (std::is_same_v<T, Parser::LitCharExpr>) {
+                os << "LitChar '" << n.value << "'\n";
+            } else if constexpr (std::is_same_v<T, Parser::ErrorExpr>) {
+                os << "Error " << n.token.lexeme << '\n';
             } else if constexpr (std::is_same_v<T, Parser::BinaryExpr>) {
                 os << "Binary " << op_to_str(n.op) << '\n';
                 print_indent(os, depth + 1); os << "lhs:\n";

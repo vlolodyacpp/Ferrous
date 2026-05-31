@@ -3,16 +3,19 @@ import Ferrous.Token;
 import Ferrous.Lexer;
 import Ferrous.Parser;
 import Ferrous.Printer;
+import Ferrous.Semantic;
 
 int main(int argc, char **argv) {
     bool dump_tokens = false;
     bool dump_ast    = false;
+    bool check       = false;
     const char* path = nullptr;
 
     for (int i = 1; i < argc; ++i) {
         std::string_view a = argv[i];
         if      (a == "--dump-tokens") dump_tokens = true;
         else if (a == "--dump-ast")   dump_ast   = true;
+        else if (a == "--check")      check = true;
         else                           path = argv[i];
     }
 
@@ -51,5 +54,13 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    if (check) {
+        Parser::Parser p(std::move(tokens));
+        auto decls = p.parse();
+        Semantic::Semantic sema;
+        auto bag = sema.check(decls);
+        Semantic::print_diagnostics(bag, path, std::cerr);
+        return bag.has_errors() ? 1 : 0;
+    }
     return 0;
 }
