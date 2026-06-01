@@ -41,22 +41,65 @@ export namespace Semantic {
 
 
 
-    // таблица встроенных типов
+    // таблица всех типов (builtin + пользовательские)
     class TypeRegistry {
     public:
+        struct StructType {
+            std::string name;
+            std::vector<std::pair<std::string, TypeID>> fields;
+        };
+        struct ArrayType {
+            TypeID elem;
+            std::uint64_t size;
+        };
+
         TypeRegistry();
         TypeID builtin(Lexer::TokenKind) const;
         TypeID error_type() const;
         TypeID void_type() const;
         bool equal(TypeID, TypeID) const;
+        TypeID array(TypeID elem, std::uint64_t size);
+        TypeID struct_placeholder(std::string_view name);
+        void finalize_struct(std::string_view name,
+            std::vector<std::pair<std::string_view, TypeID>> fields);
+        TypeID declare_alias(std::string_view name);
+        void register_alias(std::string_view name, TypeID target);
+        std::optional<TypeID> by_name(std::string_view name) const;
+        const StructType* get_struct(TypeID) const;
+        const ArrayType* get_array(TypeID) const;
+        bool is_struct(TypeID) const;
+        bool is_array(TypeID) const;
+        const std::vector<TypeID>& all_structs() const;
+        TypeID resolve_alias(TypeID) const;
     private:
         struct Builtin {
             Lexer::TokenKind kind;
         };
-        std::vector<Builtin> builtins;
+        struct AliasType {
+            std::string name;
+            TypeID target;
+            bool resolved = false;
+        };
+        struct ArrayKey {
+            TypeID elem;
+            std::uint64_t size;
+            bool operator==(const ArrayKey&) const = default;
+        };
+        struct ArrayKeyHash {
+            std::size_t operator()(const ArrayKey& key) const;
+        };
+
+        using TypeEntry = std::variant<Builtin, StructType, ArrayType, AliasType>;
+
+        std::vector<TypeEntry> entries;
         std::unordered_map<Lexer::TokenKind, TypeID> by_kind;
+        std::unordered_map<std::string, TypeID> by_name_map;
+        std::unordered_map<ArrayKey, TypeID, ArrayKeyHash> array_cache;
+        std::vector<TypeID> struct_ids;
         TypeID error_id{};
         TypeID void_id{};
+
+        TypeID normalize(TypeID) const;
     };
 
     //Проверка типов
@@ -122,6 +165,8 @@ export namespace Semantic {
 
         void install_builtins();
         void pass1(const std::vector<Parser::Decl>&);
+        void pass1_types(const std::vector<Parser::Decl>&);
+        void check_recursive_structs();
         void pass1_fn(Scope&, const Parser::FnDecl&);
         void verify_main();
     };
