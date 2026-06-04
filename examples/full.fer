@@ -18,7 +18,7 @@ namespace math {
 }
 
 fn main() -> int32 {
-    let mut name: float32 = 3.2
+    let mut name: float32 = 3.2;
     return 0;
 }
 

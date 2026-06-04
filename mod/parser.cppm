@@ -3,13 +3,17 @@ export module Ferrous.Parser;
 import std;
 export import Ferrous.AST;
 export import Ferrous.Token;
+export import Ferrous.Semantic;
 
 export namespace Parser {
 
     class Parser {
     public:
 
-        explicit Parser(std::vector<Lexer::Token> tokens) : tokens(std::move(tokens)), pos(0) {}
+        explicit Parser(std::vector<Lexer::Token> tokens, Semantic::DiagBag& bag)
+            : tokens(std::move(tokens)), pos(0), diag(&bag) {}
+        explicit Parser(std::vector<Lexer::Token> tokens)
+            : tokens(std::move(tokens)), pos(0), diag(nullptr) {}
         std::vector<Decl> parse();
 
         // для отладки(временно)
@@ -22,6 +26,7 @@ export namespace Parser {
         std::vector<Lexer::Token> tokens;
         std::size_t pos = 0;
         bool is_conditional = false;
+        Semantic::DiagBag* diag = nullptr;
 
         Lexer::Token peek() const;
         Lexer::Token peek_next() const;
@@ -31,6 +36,8 @@ export namespace Parser {
         bool match(Lexer::TokenKind);
         Lexer::Token expect(Lexer::TokenKind);
         bool is_end() const;
+
+        void report_error(const Lexer::Token&, std::string_view);
 
 
 

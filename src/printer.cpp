@@ -115,8 +115,12 @@ namespace Printer {
         }, t.node);
     }
 
-    void print_expr(const Parser::Expr& e, std::ostream& os, int depth) {
+    void print_expr(const Parser::Expr& e, std::ostream& os, int depth,
+                    const Semantic::AnnotatedAST* annotations) {
         print_indent(os, depth);
+        auto print_fn = [annotations](const Parser::Expr& ex, std::ostream& os2, int d) {
+            print_expr(ex, os2, d, annotations);
+        };
         std::visit([&](const auto& n) {
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Parser::LitIntExpr>) {
@@ -136,36 +140,36 @@ namespace Printer {
             } else if constexpr (std::is_same_v<T, Parser::BinaryExpr>) {
                 os << "Binary " << op_to_str(n.op) << '\n';
                 print_indent(os, depth + 1); os << "lhs:\n";
-                print_expr(*n.lhs, os, depth + 2);
+                print_fn(*n.lhs, os, depth + 2);
                 print_indent(os, depth + 1); os << "rhs:\n";
-                print_expr(*n.rhs, os, depth + 2);
+                print_fn(*n.rhs, os, depth + 2);
             } else if constexpr (std::is_same_v<T, Parser::UnaryExpr>) {
                 os << "Unary " << op_to_str(n.op) << '\n';
                 print_indent(os, depth + 1); os << "operand:\n";
-                print_expr(*n.operand, os, depth + 2);
+                print_fn(*n.operand, os, depth + 2);
             } else if constexpr (std::is_same_v<T, Parser::GroupExpr>) {
                 os << "Group\n";
                 print_indent(os, depth + 1); os << "inner:\n";
-                print_expr(*n.inner, os, depth + 2);
+                print_fn(*n.inner, os, depth + 2);
             } else if constexpr (std::is_same_v<T, Parser::CallExpr>) {
                 os << "Call\n";
                 print_indent(os, depth + 1); os << "callee:\n";
-                print_expr(*n.call, os, depth + 2);
+                print_fn(*n.call, os, depth + 2);
                 print_indent(os, depth + 1); os << "args (" << n.args.size() << "):\n";
                 for (std::size_t i = 0; i < n.args.size(); ++i) {
                     print_indent(os, depth + 2); os << "[" << i << "]:\n";
-                    print_expr(n.args[i], os, depth + 3);
+                    print_fn(n.args[i], os, depth + 3);
                 }
             } else if constexpr (std::is_same_v<T, Parser::IndexExpr>) {
                 os << "Index\n";
                 print_indent(os, depth + 1); os << "array:\n";
-                print_expr(*n.array, os, depth + 2);
+                print_fn(*n.array, os, depth + 2);
                 print_indent(os, depth + 1); os << "index:\n";
-                print_expr(*n.index, os, depth + 2);
+                print_fn(*n.index, os, depth + 2);
             } else if constexpr (std::is_same_v<T, Parser::FieldExpr>) {
                 os << "Field " << n.field << '\n';
                 print_indent(os, depth + 1); os << "object:\n";
-                print_expr(*n.object, os, depth + 2);
+                print_fn(*n.object, os, depth + 2);
             } else if constexpr (std::is_same_v<T, Parser::PathExpr>) {
                 os << "Path ";
                 for (std::size_t i = 0; i < n.segments.size(); ++i) {
@@ -176,29 +180,42 @@ namespace Printer {
             } else if constexpr (std::is_same_v<T, Parser::CastExpr>) {
                 os << "Cast\n";
                 print_indent(os, depth + 1); os << "expr:\n";
-                print_expr(*n.expr, os, depth + 2);
+                print_fn(*n.expr, os, depth + 2);
                 print_indent(os, depth + 1); os << "target:\n";
                 print_type(n.target, os, depth + 2);
             } else if constexpr (std::is_same_v<T, Parser::ArrayLitExpr>) {
                 os << "ArrayLit (" << n.elems.size() << ")\n";
                 for (std::size_t i = 0; i < n.elems.size(); ++i) {
                     print_indent(os, depth + 1); os << "[" << i << "]:\n";
-                    print_expr(n.elems[i], os, depth + 2);
+                    print_fn(n.elems[i], os, depth + 2);
                 }
             } else if constexpr (std::is_same_v<T, Parser::StructLitExpr>) {
                 os << "StructLit " << n.name << " (" << n.fields.size() << ")\n";
                 for (const auto& [fn, fe] : n.fields) {
                     print_indent(os, depth + 1); os << fn << ":\n";
-                    print_expr(*fe, os, depth + 2);
+                    print_fn(*fe, os, depth + 2);
                 }
             } else {
                 os << "<unsupported expr variant>\n";
             }
         }, e.node);
+        if (annotations) {
+            auto it = annotations->expr_type.find(&e);
+            if (it != annotations->expr_type.end() && annotations->types) {
+                os << std::string(depth * 2, ' ') << "  : " << annotations->types->name(it->second) << '\n';
+            }
+        }
     }
 
-    void print_stmt(const Parser::Stmt& s, std::ostream& os, int depth) {
+    void print_stmt(const Parser::Stmt& s, std::ostream& os, int depth,
+                    const Semantic::AnnotatedAST* annotations) {
         print_indent(os, depth);
+        auto print_fn = [annotations](const Parser::Expr& ex, std::ostream& os2, int d) {
+            print_expr(ex, os2, d, annotations);
+        };
+        auto print_stmt_fn = [annotations](const Parser::Stmt& st, std::ostream& os2, int d) {
+            print_stmt(st, os2, d, annotations);
+        };
         std::visit([&](const auto& n) {
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Parser::LetStmt>) {
@@ -208,17 +225,17 @@ namespace Printer {
                     print_type(*n.type, os, depth + 2);
                 }
                 print_indent(os, depth + 1); os << "init:\n";
-                print_expr(*n.expr_init, os, depth + 2);
+                print_fn(*n.expr_init, os, depth + 2);
             } else if constexpr (std::is_same_v<T, Parser::ExprStmt>) {
                 os << "ExprStmt\n";
-                print_expr(*n.expr, os, depth + 1);
+                print_fn(*n.expr, os, depth + 1);
             } else if constexpr (std::is_same_v<T, Parser::BlockStmt>) {
                 os << "Block (" << n.elems.size() << ")\n";
-                for (const auto& st : n.elems) print_stmt(st, os, depth + 1);
+                for (const auto& st : n.elems) print_stmt_fn(st, os, depth + 1);
             } else if constexpr (std::is_same_v<T, Parser::ReturnStmt>) {
                 os << "Return\n";
                 if (n.value) {
-                    print_expr(*n.value, os, depth + 1);
+                    print_fn(*n.value, os, depth + 1);
                 }
             } else if constexpr (std::is_same_v<T, Parser::BreakStmt>) {
                 os << "Break\n";
@@ -229,33 +246,41 @@ namespace Printer {
             } else if constexpr (std::is_same_v<T, Parser::IfStmt>) {
                 os << "If\n";
                 print_indent(os, depth + 1); os << "cond:\n";
-                print_expr(*n.condition, os, depth + 2);
+                print_fn(*n.condition, os, depth + 2);
                 print_indent(os, depth + 1); os << "then:\n";
-                print_stmt(*n.then_body, os, depth + 2);
+                print_stmt_fn(*n.then_body, os, depth + 2);
                 if (n.else_body) {
                     print_indent(os, depth + 1); os << "else:\n";
-                    print_stmt(*n.else_body, os, depth + 2);
+                    print_stmt_fn(*n.else_body, os, depth + 2);
                 }
             } else if constexpr (std::is_same_v<T, Parser::WhileStmt>) {
                 os << "While\n";
                 print_indent(os, depth + 1); os << "cond:\n";
-                print_expr(*n.condition, os, depth + 2);
+                print_fn(*n.condition, os, depth + 2);
                 print_indent(os, depth + 1); os << "body:\n";
-                print_stmt(*n.body, os, depth + 2);
+                print_stmt_fn(*n.body, os, depth + 2);
             } else {
                 os << "<unsupported stmt>\n";
             }
         }, s.node);
     }
 
-    void print_block(const Parser::BlockStmt& b, std::ostream& os, int depth) {
+    void print_block(const Parser::BlockStmt& b, std::ostream& os, int depth,
+                     const Semantic::AnnotatedAST* annotations) {
         print_indent(os, depth);
         os << "Block (" << b.elems.size() << ")\n";
-        for (const auto& s : b.elems) print_stmt(s, os, depth + 1);
+        auto print_stmt_fn = [annotations](const Parser::Stmt& st, std::ostream& os2, int d) {
+            print_stmt(st, os2, d, annotations);
+        };
+        for (const auto& s : b.elems) print_stmt_fn(s, os, depth + 1);
     }
 
-    void print_decl(const Parser::Decl& d, std::ostream& os, int depth) {
+    void print_decl(const Parser::Decl& d, std::ostream& os, int depth,
+                    const Semantic::AnnotatedAST* annotations) {
         print_indent(os, depth);
+        auto print_block_fn = [annotations](const Parser::BlockStmt& b, std::ostream& os2, int d) {
+            print_block(b, os2, d, annotations);
+        };
         std::visit([&](const auto& n) {
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Parser::FnDecl>) {
@@ -271,7 +296,7 @@ namespace Printer {
                     print_type(*n.return_type, os, depth + 2);
                 }
                 print_indent(os, depth + 1); os << "body:\n";
-                print_block(n.body, os, depth + 2);
+                print_block_fn(n.body, os, depth + 2);
             } else if constexpr (std::is_same_v<T, Parser::StructDecl>) {
                 os << "Struct " << n.name << '\n';
                 print_indent(os, depth + 1);
@@ -287,12 +312,20 @@ namespace Printer {
             } else if constexpr (std::is_same_v<T, Parser::NameSpaceDecl>) {
                 os << "Namespace " << n.name << " (" << n.decls.size() << ")\n";
                 for (const auto& sub : n.decls) {
-                    print_decl(sub, os, depth + 1);
+                    print_decl(sub, os, depth + 1, annotations);
                 }
             } else {
                 os << "<unsupported decl>\n";
             }
         }, d.node);
+    }
+
+    void print_decls_with_types(const std::vector<Parser::Decl>& decls,
+                                 const Semantic::AnnotatedAST& aast,
+                                 std::ostream& os) {
+        for (const auto& decl : decls) {
+            print_decl(decl, os, 0, &aast);
+        }
     }
 
 } // namespace Printer

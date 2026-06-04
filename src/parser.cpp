@@ -54,9 +54,18 @@ namespace Parser {
 
     Lexer::Token Parser::expect(TokenKind k) {
         if (!check(k)) {
-            return Lexer::Token{TokenKind::Eof, "err"}; // временная заглушка
+            const auto t = peek();
+            report_error(t, std::format("expected token, got `{}`", t.lexeme));
+            advance();
+            return Lexer::Token{TokenKind::Eof, "err", t.line, t.column};
         }
         return advance();
+    }
+
+    void Parser::report_error(const Lexer::Token& t, std::string_view message) {
+        if (diag) {
+            diag->error(t.line, t.column, std::string(message));
+        }
     }
 
     // вспомогательные ф-ции для парсинга выражений
