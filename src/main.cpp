@@ -4,6 +4,7 @@ import Ferrous.Lexer;
 import Ferrous.Parser;
 import Ferrous.Printer;
 import Ferrous.Semantic;
+import Ferrous.Codegen;
 
 int main(int argc, char **argv) {
     bool dump_tokens = false;
@@ -30,15 +31,15 @@ int main(int argc, char **argv) {
     }
 
     if (!path) {
-        std::cerr << "usage: Ferrous [--dump-tokens|--dump-ast|--dump-sema] [-o <out>] <file.fer>\n";
+        std::cerr << "usage: Ferrous [--dump-tokens|--dump-ast|--dump-sema] [-o <out>] <file.fer>\n"
+                  << "  (default output: a.out)\n";
         return 1;
     }
 
     if (!output_path) {
-        static std::string default_out;
-        default_out = path;
-        default_out += ".out";
-        output_path = default_out.c_str();
+        // без -o: дефолтное имя a.out
+        static const char a_out[] = "a.out";
+        output_path = a_out;
     }
 
     std::ifstream in(path);
@@ -108,6 +109,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    std::cerr << path << ": compilation successful → " << output_path << "\n";
+
+    Codegen::Codegen cg;
+    cg.generate(decls, sema.aast, output_path);
     return 0;
 }

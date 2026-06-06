@@ -1,4 +1,4 @@
-fn ddd() -> int32 {
+fn main() -> int32 {
     let arr: [int32; 5] = [1, 2, 3, 4, 5];
     let mut sum: int32 = 0;
     let mut i: int32 = 0;
@@ -8,22 +8,6 @@ fn ddd() -> int32 {
         i = i + 1;
     }
 
-    let c: char = 'sddfsasts';
-
-    let num: int32 = 0b01110;
-    let num2: float32 = 1.e-2;
-
-
-    print(int_to_string(sum));
+    print(sum);
     return 0;
-}
-
-
-
-fn add(int32, int32){
-
-}
-
-fn add(int32, int32){
-
 }

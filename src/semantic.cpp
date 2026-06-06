@@ -1032,7 +1032,15 @@ namespace Semantic {
                         case TokenKind::OpMinus:
                         case TokenKind::OpStar:
                         case TokenKind::OpSlash:
-                        case TokenKind::OpPercent:
+                        case TokenKind::OpPercent: {
+                            // резолв untyped перед арифметикой
+                            if (!registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm))
+                                { rhs_t = lhs_t; rhs_norm = lhs_norm; }
+                            else if (registry.is_untyped(lhs_norm) && !registry.is_untyped(rhs_norm))
+                                { lhs_t = rhs_t; lhs_norm = rhs_norm; }
+                            else if (registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm))
+                                { lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
+                                  lhs_norm = rhs_norm = lhs_t; }
                             if (!is_numeric(lhs_norm) || !is_numeric(rhs_norm)) {
                                 diag.error(0, 0, "arithmetic on non-numeric types: "
                                     + registry.name(lhs_t) + " and " + registry.name(rhs_t));
@@ -1050,16 +1058,29 @@ namespace Semantic {
                                 registry.equal(rhs_norm, registry.builtin(TokenKind::KwString))) {
                                 return registry.builtin(TokenKind::KwString);
                             }
+                            aast.expr_type[n.lhs.get()] = lhs_t;
+                            aast.expr_type[n.rhs.get()] = rhs_t;
                             return unify_binary(lhs_t, rhs_t);
+                        }
 
                         // сравнение
                         case TokenKind::OpEqEq:
                         case TokenKind::OpBangEq:
+                            // резолв untyped перед сравнением
+                            if (!registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm))
+                                { rhs_t = lhs_t; rhs_norm = lhs_norm; }
+                            else if (registry.is_untyped(lhs_norm) && !registry.is_untyped(rhs_norm))
+                                { lhs_t = rhs_t; lhs_norm = rhs_norm; }
+                            else if (registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm))
+                                { lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
+                                  lhs_norm = rhs_norm = lhs_t; }
                             if (!types_compatible(lhs_norm, rhs_norm)) {
                                 diag.error(0, 0, "cannot compare "
                                     + registry.name(lhs_t) + " and " + registry.name(rhs_t));
                                 return registry.error_type();
                             }
+                            aast.expr_type[n.lhs.get()] = lhs_t;
+                            aast.expr_type[n.rhs.get()] = rhs_t;
                             return registry.builtin(TokenKind::KwBool);
 
                         // неравенства
@@ -1067,11 +1088,21 @@ namespace Semantic {
                         case TokenKind::OpLtEq:
                         case TokenKind::OpGt:
                         case TokenKind::OpGtEq:
+                            // резолв untyped перед сравнением
+                            if (!registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm))
+                                { rhs_t = lhs_t; rhs_norm = lhs_norm; }
+                            else if (registry.is_untyped(lhs_norm) && !registry.is_untyped(rhs_norm))
+                                { lhs_t = rhs_t; lhs_norm = rhs_norm; }
+                            else if (registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm))
+                                { lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
+                                  lhs_norm = rhs_norm = lhs_t; }
                             if (!is_numeric(lhs_norm) || !is_numeric(rhs_norm)) {
                                 diag.error(0, 0, "comparison on non-numeric types: "
                                     + registry.name(lhs_t) + " and " + registry.name(rhs_t));
                                 return registry.error_type();
                             }
+                            aast.expr_type[n.lhs.get()] = lhs_t;
+                            aast.expr_type[n.rhs.get()] = rhs_t;
                             return registry.builtin(TokenKind::KwBool);
 
                         // логические
@@ -1225,7 +1256,10 @@ namespace Semantic {
                     return registry.error_type();
                 }
                 TypeID idx_norm = registry.resolve_alias(idx_t);
-                if (!registry.is_fixed_int(idx_norm) && !registry.is_untyped(idx_norm)) {
+                if (registry.is_untyped(idx_norm)) {
+                    idx_t = registry.builtin(TokenKind::KwInt32);
+                    aast.expr_type[n.index.get()] = idx_t;
+                } else if (!registry.is_fixed_int(idx_norm)) {
                     diag.error(0, 0, "array index must be integer, got " + registry.name(idx_t));
                     return registry.error_type();
                 }
@@ -1258,9 +1292,14 @@ namespace Semantic {
                 TypeID elem_type = check_expr(n.elems[0], std::nullopt);
                 if (registry.is_untyped(elem_type)) {
                     elem_type = registry.builtin(TokenKind::KwInt32);
+                    aast.expr_type[&n.elems[0]] = elem_type;
                 }
                 for (std::size_t i = 1; i < n.elems.size(); ++i) {
                     TypeID t = check_expr(n.elems[i], elem_type);
+                    if (registry.is_untyped(t)) {
+                        t = elem_type;
+                        aast.expr_type[&n.elems[i]] = t;
+                    }
                     if (!registry.equal(registry.resolve_alias(t), registry.resolve_alias(elem_type))) {
                         diag.error(0, 0, "array element type mismatch: expected "
                             + registry.name(elem_type) + ", got " + registry.name(t));
@@ -1338,6 +1377,7 @@ namespace Semantic {
                 TypeID init_t = check_expr(*n.expr_init, expected);
                 if (registry.is_untyped(init_t)) {
                     init_t = expected.value_or(registry.builtin(TokenKind::KwInt32));
+                    aast.expr_type[n.expr_init.get()] = init_t;
                 }
                 if (expected && !registry.equal(registry.resolve_alias(init_t),
                                                 registry.resolve_alias(*expected))) {
@@ -1399,6 +1439,7 @@ namespace Semantic {
                     TypeID val_t = check_expr(*n.value, current_return_type);
                     if (registry.is_untyped(val_t)) {
                         val_t = current_return_type;
+                        aast.expr_type[&*n.value] = val_t;
                     }
                     if (!registry.equal(registry.resolve_alias(val_t),
                                         registry.resolve_alias(current_return_type))) {

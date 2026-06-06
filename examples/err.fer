@@ -1,0 +1,7 @@
+fn main() -> int32 {
+    let arr: [int32; 3] = [10, 20, 30];
+    // runtime error: index out of bounds
+    let x = arr[2];
+    println(x);
+    return 0;
+}

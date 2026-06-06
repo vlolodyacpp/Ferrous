@@ -4,6 +4,8 @@ struct Point {
   }
 
 fn main() -> int32 {
+
+    let x = nan;
     let p = Point { x: 1.0, y: 2.0 };
     let z = Point { x: 0.0, y: 0.0, };
     if p.x > 0.0 {
@@ -11,4 +13,3 @@ fn main() -> int32 {
     }
     return 0;
 }
-
