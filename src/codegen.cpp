@@ -51,6 +51,9 @@ namespace Codegen {
         llvm::LLVMContext& C() const { return *llvm::unwrap(ctx); }
         llvm::Module&      M() const { return *llvm::unwrap(mod); }
         llvm::IRBuilder<>& B() const { return *llvm::unwrap(builder); }
+        LLVMValueRef i32_zero() const {
+            return llvm::wrap(llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), 0));
+        }
 
         // аннотации от семантики
         const Semantic::AnnotatedAST* aast = nullptr;
@@ -100,8 +103,8 @@ namespace Codegen {
 
         // генерация выражений
         LLVMValueRef gen_expr(const Parser::Expr& e);
-        LLVMValueRef gen_lit_int(const Parser::LitIntExpr& n);
-        LLVMValueRef gen_lit_float(const Parser::LitFloatExpr& n);
+        LLVMValueRef gen_lit_int(const Parser::LitIntExpr& n, const Parser::Expr& e);
+        LLVMValueRef gen_lit_float(const Parser::LitFloatExpr& n, const Parser::Expr& e);
         LLVMValueRef gen_lit_bool(const Parser::LitBoolExpr& n);
         LLVMValueRef gen_lit_string(const Parser::LitStringExpr& n);
         LLVMValueRef gen_lit_char(const Parser::LitCharExpr& n);
@@ -406,9 +409,9 @@ namespace Codegen {
         return std::visit([&](const auto& n) -> LLVMValueRef {
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Parser::LitIntExpr>)
-                return gen_lit_int(n);
+                return gen_lit_int(n, e);
             if constexpr (std::is_same_v<T, Parser::LitFloatExpr>)
-                return gen_lit_float(n);
+                return gen_lit_float(n, e);
             if constexpr (std::is_same_v<T, Parser::LitBoolExpr>)
                 return gen_lit_bool(n);
             if constexpr (std::is_same_v<T, Parser::LitStringExpr>)
@@ -416,7 +419,7 @@ namespace Codegen {
             if constexpr (std::is_same_v<T, Parser::LitCharExpr>)
                 return gen_lit_char(n);
             if constexpr (std::is_same_v<T, Parser::ErrorExpr>)
-                return LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false);
+                return i32_zero();
             if constexpr (std::is_same_v<T, Parser::IdentExpr>)
                 return gen_ident(n);
             if constexpr (std::is_same_v<T, Parser::PathExpr>)
@@ -439,13 +442,14 @@ namespace Codegen {
                 return gen_array_lit(n);
             if constexpr (std::is_same_v<T, Parser::StructLitExpr>)
                 return gen_struct_lit(n);
-            return LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false);
+            return i32_zero();
         }, e.node);
     }
 
 
     // целочисленный литерал: парсинг (dec/hex/bin) + суффикс → ConstInt
-    LLVMValueRef Codegen::Impl::gen_lit_int(const Parser::LitIntExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_lit_int(const Parser::LitIntExpr& n,
+                                            const Parser::Expr& e) {
         std::string_view raw = n.value;
         std::uint64_t val = 0;
         int base = 10;
@@ -471,19 +475,19 @@ namespace Codegen {
         if (ec != std::errc{}) val = 0;
 
         // тип из аннотаций (семантика уже резолвила untyped)
-        auto it = aast->expr_type.find(&static_cast<const Parser::Expr&>(
-            *reinterpret_cast<const Parser::Expr*>(&n)));
+        auto it = aast->expr_type.find(&e);
         Semantic::TypeID tid = (it != aast->expr_type.end())
             ? it->second : types->builtin(TokenKind::KwInt32);
         tid = types->resolve_alias(tid);
 
-        LLVMTypeRef lt = to_llvm_type(tid);
-        return LLVMConstInt(lt, val, 0);
+        llvm::Type* lt = llvm::unwrap(to_llvm_type(tid));
+        return llvm::wrap(llvm::ConstantInt::get(lt, val, false));
     }
 
 
     // float-литерал: from_chars + nan/inf → ConstReal
-    LLVMValueRef Codegen::Impl::gen_lit_float(const Parser::LitFloatExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_lit_float(const Parser::LitFloatExpr& n,
+                                              const Parser::Expr& e) {
         double val = 0.0;
         std::string_view raw = n.value;
 
@@ -497,35 +501,34 @@ namespace Codegen {
             if (ec != std::errc{}) val = 0.0;
         }
 
-        auto it = aast->expr_type.find(&static_cast<const Parser::Expr&>(
-            *reinterpret_cast<const Parser::Expr*>(&n)));
+        auto it = aast->expr_type.find(&e);
         Semantic::TypeID tid = (it != aast->expr_type.end())
             ? it->second : types->builtin(TokenKind::KwFloat64);
         tid = types->resolve_alias(tid);
 
-        LLVMTypeRef lt = to_llvm_type(tid);
-        return LLVMConstReal(lt, val);
+        llvm::Type* lt = llvm::unwrap(to_llvm_type(tid));
+        return llvm::wrap(llvm::ConstantFP::get(lt, val));
     }
 
     // булев литерал → i1: 0 или 1
     LLVMValueRef Codegen::Impl::gen_lit_bool(const Parser::LitBoolExpr& n) {
-        return LLVMConstInt(LLVMInt1TypeInContext(ctx), n.value ? 1 : 0, false);
+        return llvm::wrap(llvm::ConstantInt::get(
+            llvm::Type::getInt1Ty(C()), n.value ? 1 : 0));
     }
 
 
-    // строковый литерал: GlobalStringPtr + упаковка в {i8*, i64}
+    // строковый литерал: глобальная строка + упаковка в {ptr, i64}
     LLVMValueRef Codegen::Impl::gen_lit_string(const Parser::LitStringExpr& n) {
         std::string str(n.value);
-        LLVMValueRef global = LLVMBuildGlobalStringPtr(builder,
-            str.c_str(), "str");
-        LLVMValueRef len = LLVMConstInt(LLVMInt64TypeInContext(ctx),
-            str.size(), false);
+        llvm::Value* global = B().CreateGlobalString(str, "str");
+        llvm::Value* len = llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(C()), str.size());
 
-        LLVMValueRef s = LLVMGetUndef(to_llvm_type(
-            types->builtin(TokenKind::KwString)));
-        s = LLVMBuildInsertValue(builder, s, global, 0, "");
-        s = LLVMBuildInsertValue(builder, s, len, 1, "");
-        return s;
+        llvm::Value* s = llvm::UndefValue::get(
+            llvm::unwrap(to_llvm_type(types->builtin(TokenKind::KwString))));
+        s = B().CreateInsertValue(s, global, {0u});
+        s = B().CreateInsertValue(s, len, {1u});
+        return llvm::wrap(s);
     }
 
 
@@ -547,10 +550,8 @@ namespace Codegen {
             cp = static_cast<std::uint8_t>(raw[0]);
         }
 
-        return LLVMConstInt(LLVMInt32TypeInContext(ctx), cp, false);
+        return llvm::wrap(llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), cp));
     }
-
-    // ── gen_ident ──────────────────────────────────────────────────────
 
     // загрузка переменной: поиск в цепочке CGScope → Load из alloca
     LLVMValueRef Codegen::Impl::gen_ident(const Parser::IdentExpr& n) {
@@ -559,136 +560,126 @@ namespace Codegen {
             auto it = s->vars.find(name);
             if (it != s->vars.end()) {
                 auto tit = s->var_types.find(name);
-                LLVMTypeRef ty = (tit != s->var_types.end())
-                    ? tit->second : LLVMInt32TypeInContext(ctx);
-                return LLVMBuildLoad2(builder, ty, it->second, name.c_str());
+                llvm::Type* ty = (tit != s->var_types.end())
+                    ? llvm::unwrap(tit->second) : llvm::Type::getInt32Ty(C());
+                return llvm::wrap(B().CreateLoad(ty, llvm::unwrap(it->second), name));
             }
         }
-        return LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false);
+        return i32_zero();
     }
 
-    // ── gen_path ───────────────────────────────────────────────────────
 
     // доступ к переменной через namespace: обход CGScope по последнему сегменту
     LLVMValueRef Codegen::Impl::gen_path(const Parser::PathExpr& n) {
-        std::string_view last = n.segments.back();
+        std::string last(n.segments.back());
         for (CGScope* s = cg_current_scope; s; s = s->parent) {
-            auto it = s->vars.find(std::string(last));
+            auto it = s->vars.find(last);
             if (it != s->vars.end()) {
-                LLVMTypeRef ty = LLVMTypeOf(it->second);
-                return LLVMBuildLoad2(builder,
-                    LLVMGetElementType(ty), it->second,
-                    std::string(last).c_str());
+                auto tit = s->var_types.find(last);
+                llvm::Type* ty = (tit != s->var_types.end())
+                    ? llvm::unwrap(tit->second) : llvm::Type::getInt32Ty(C());
+                return llvm::wrap(B().CreateLoad(ty, llvm::unwrap(it->second), last));
             }
         }
-        return LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false);
+        return i32_zero();
     }
 
     // ── gen_unary ──────────────────────────────────────────────────────
 
     // унарный минус (Neg/FNeg) или логическое НЕ (Not)
     LLVMValueRef Codegen::Impl::gen_unary(const Parser::UnaryExpr& n) {
-        LLVMValueRef op = gen_expr(*n.operand);
-        LLVMTypeKind tk = LLVMGetTypeKind(LLVMTypeOf(op));
+        llvm::Value* op = llvm::unwrap(gen_expr(*n.operand));
 
         if (n.op == TokenKind::OpMinus) {
-            if (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind)
-                return LLVMBuildFNeg(builder, op, "neg");
-            return LLVMBuildNeg(builder, op, "neg");
+            if (op->getType()->isFloatingPointTy())
+                return llvm::wrap(B().CreateFNeg(op, "neg"));
+            return llvm::wrap(B().CreateNeg(op, "neg"));
         }
         if (n.op == TokenKind::OpBang)
-            return LLVMBuildNot(builder, op, "not");
-        return op;
+            return llvm::wrap(B().CreateNot(op, "not"));
+        return llvm::wrap(op);
     }
-
-    // ── gen_binary ─────────────────────────────────────────────────────
 
     // бинарные операторы: арифметика, сравнения, логика, присваивание, строки
     LLVMValueRef Codegen::Impl::gen_binary(const Parser::BinaryExpr& n) {
         // присваивание
         if (n.op == TokenKind::OpEq) {
-            LLVMValueRef rhs = gen_expr(*n.rhs);
-            LLVMValueRef ptr = gen_lvalue_ptr(*n.lhs);
-            LLVMBuildStore(builder, rhs, ptr);
-            return rhs;
+            llvm::Value* rhs = llvm::unwrap(gen_expr(*n.rhs));
+            llvm::Value* ptr = llvm::unwrap(gen_lvalue_ptr(*n.lhs));
+            B().CreateStore(rhs, ptr);
+            return llvm::wrap(rhs);
         }
 
-        LLVMValueRef lhs = gen_expr(*n.lhs);
-        LLVMValueRef rhs = gen_expr(*n.rhs);
-        LLVMTypeRef ty = LLVMTypeOf(lhs);
-        LLVMTypeKind tk = LLVMGetTypeKind(ty);
-        bool is_float = (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind);
+        llvm::Value* lhs = llvm::unwrap(gen_expr(*n.lhs));
+        llvm::Value* rhs = llvm::unwrap(gen_expr(*n.rhs));
+        llvm::Type* ty = lhs->getType();
+        bool is_float = ty->isFloatingPointTy();
+
+        auto call_rt = [&](const char* name, std::vector<llvm::Value*> a,
+                           const char* lbl) -> llvm::Value* {
+            auto fn = llvm::cast<llvm::Function>(llvm::unwrap(functions[name]));
+            auto ft = llvm::cast<llvm::FunctionType>(llvm::unwrap(function_types[name]));
+            return B().CreateCall(ft, fn, a, lbl);
+        };
 
         switch (n.op) {
             case TokenKind::OpPlus: {
                 // строковая конкатенация
-                if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
-                    LLVMValueRef a_ptr = LLVMBuildExtractValue(builder, lhs, 0, "a.ptr");
-                    LLVMValueRef a_len = LLVMBuildExtractValue(builder, lhs, 1, "a.len");
-                    LLVMValueRef b_ptr = LLVMBuildExtractValue(builder, rhs, 0, "b.ptr");
-                    LLVMValueRef b_len = LLVMBuildExtractValue(builder, rhs, 1, "b.len");
-                    LLVMValueRef fn = functions["__ferrous_str_concat"];
-                    LLVMTypeRef ft = function_types["__ferrous_str_concat"];
-                    LLVMValueRef a[] = {a_ptr, a_len, b_ptr, b_len};
-                    return LLVMBuildCall2(builder, ft, fn, a, 4, "concat");
+                if (ty->isStructTy()) {
+                    llvm::Value* a_ptr = B().CreateExtractValue(lhs, {0u}, "a.ptr");
+                    llvm::Value* a_len = B().CreateExtractValue(lhs, {1u}, "a.len");
+                    llvm::Value* b_ptr = B().CreateExtractValue(rhs, {0u}, "b.ptr");
+                    llvm::Value* b_len = B().CreateExtractValue(rhs, {1u}, "b.len");
+                    return llvm::wrap(call_rt("__ferrous_str_concat",
+                        {a_ptr, a_len, b_ptr, b_len}, "concat"));
                 }
-                if (is_float) return LLVMBuildFAdd(builder, lhs, rhs, "add");
-                return LLVMBuildAdd(builder, lhs, rhs, "add");
+                return llvm::wrap(is_float ? B().CreateFAdd(lhs, rhs, "add")
+                                           : B().CreateAdd(lhs, rhs, "add"));
             }
             case TokenKind::OpMinus:
-                if (is_float) return LLVMBuildFSub(builder, lhs, rhs, "sub");
-                return LLVMBuildSub(builder, lhs, rhs, "sub");
+                return llvm::wrap(is_float ? B().CreateFSub(lhs, rhs, "sub")
+                                           : B().CreateSub(lhs, rhs, "sub"));
             case TokenKind::OpStar:
-                if (is_float) return LLVMBuildFMul(builder, lhs, rhs, "mul");
-                return LLVMBuildMul(builder, lhs, rhs, "mul");
+                return llvm::wrap(is_float ? B().CreateFMul(lhs, rhs, "mul")
+                                           : B().CreateMul(lhs, rhs, "mul"));
             case TokenKind::OpSlash: {
-                if (is_float) return LLVMBuildFDiv(builder, lhs, rhs, "div");
-                // проверка деления на ноль
-                LLVMValueRef div_fn = functions["__ferrous_div_check"];
-                LLVMTypeRef div_ft = function_types["__ferrous_div_check"];
-                LLVMValueRef line = LLVMConstInt(LLVMInt64TypeInContext(ctx), 0, false);
-                LLVMValueRef div_args[] = {rhs, line};
-                LLVMValueRef checked = LLVMBuildCall2(builder, div_ft, div_fn,
-                    div_args, 2, "div_check");
-                return LLVMBuildSDiv(builder, lhs, checked, "div");
+                if (is_float) return llvm::wrap(B().CreateFDiv(lhs, rhs, "div"));
+                llvm::Value* line = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), 0);
+                llvm::Value* checked = call_rt("__ferrous_div_check", {rhs, line}, "div_check");
+                return llvm::wrap(B().CreateSDiv(lhs, checked, "div"));
             }
             case TokenKind::OpPercent: {
-                // проверка деления на ноль
-                LLVMValueRef mod_fn = functions["__ferrous_mod_check"];
-                LLVMTypeRef mod_ft = function_types["__ferrous_mod_check"];
-                LLVMValueRef line = LLVMConstInt(LLVMInt64TypeInContext(ctx), 0, false);
-                LLVMValueRef mod_args[] = {rhs, line};
-                LLVMValueRef checked = LLVMBuildCall2(builder, mod_ft, mod_fn,
-                    mod_args, 2, "mod_check");
-                return LLVMBuildSRem(builder, lhs, checked, "rem");
+                llvm::Value* line = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), 0);
+                llvm::Value* checked = call_rt("__ferrous_mod_check", {rhs, line}, "mod_check");
+                return llvm::wrap(B().CreateSRem(lhs, checked, "rem"));
             }
 
             case TokenKind::OpEqEq:
-                if (is_float) return LLVMBuildFCmp(builder, LLVMRealOEQ, lhs, rhs, "eq");
-                return LLVMBuildICmp(builder, LLVMIntEQ, lhs, rhs, "eq");
+                return llvm::wrap(is_float ? B().CreateFCmpOEQ(lhs, rhs, "eq")
+                                           : B().CreateICmpEQ(lhs, rhs, "eq"));
             case TokenKind::OpBangEq:
-                if (is_float) return LLVMBuildFCmp(builder, LLVMRealONE, lhs, rhs, "ne");
-                return LLVMBuildICmp(builder, LLVMIntNE, lhs, rhs, "ne");
+                return llvm::wrap(is_float ? B().CreateFCmpONE(lhs, rhs, "ne")
+                                           : B().CreateICmpNE(lhs, rhs, "ne"));
             case TokenKind::OpLt:
-                if (is_float) return LLVMBuildFCmp(builder, LLVMRealOLT, lhs, rhs, "lt");
-                return LLVMBuildICmp(builder, LLVMIntSLT, lhs, rhs, "lt");
+                return llvm::wrap(is_float ? B().CreateFCmpOLT(lhs, rhs, "lt")
+                                           : B().CreateICmpSLT(lhs, rhs, "lt"));
             case TokenKind::OpLtEq:
-                if (is_float) return LLVMBuildFCmp(builder, LLVMRealOLE, lhs, rhs, "le");
-                return LLVMBuildICmp(builder, LLVMIntSLE, lhs, rhs, "le");
+                return llvm::wrap(is_float ? B().CreateFCmpOLE(lhs, rhs, "le")
+                                           : B().CreateICmpSLE(lhs, rhs, "le"));
             case TokenKind::OpGt:
-                if (is_float) return LLVMBuildFCmp(builder, LLVMRealOGT, lhs, rhs, "gt");
-                return LLVMBuildICmp(builder, LLVMIntSGT, lhs, rhs, "gt");
+                return llvm::wrap(is_float ? B().CreateFCmpOGT(lhs, rhs, "gt")
+                                           : B().CreateICmpSGT(lhs, rhs, "gt"));
             case TokenKind::OpGtEq:
-                if (is_float) return LLVMBuildFCmp(builder, LLVMRealOGE, lhs, rhs, "ge");
-                return LLVMBuildICmp(builder, LLVMIntSGE, lhs, rhs, "ge");
+                return llvm::wrap(is_float ? B().CreateFCmpOGE(lhs, rhs, "ge")
+                                           : B().CreateICmpSGE(lhs, rhs, "ge"));
 
             case TokenKind::OpAndAnd:
-                return LLVMBuildAnd(builder, lhs, rhs, "and");
+                return llvm::wrap(B().CreateAnd(lhs, rhs, "and"));
             case TokenKind::OpOrOr:
-                return LLVMBuildOr(builder, lhs, rhs, "or");
+                return llvm::wrap(B().CreateOr(lhs, rhs, "or"));
 
             default:
-                return lhs;
+                return llvm::wrap(lhs);
         }
     }
 
@@ -699,35 +690,36 @@ namespace Codegen {
 
     // приведение типа: SExt/Trunc/SIToFP/FPToSI по таблице
     LLVMValueRef Codegen::Impl::gen_cast(const Parser::CastExpr& n) {
-        LLVMValueRef src = gen_expr(*n.expr);
+        llvm::Value* src = llvm::unwrap(gen_expr(*n.expr));
         Semantic::TypeID dst_tid = resolve_typeid(n.target, *types,
             types->builtin(TokenKind::KwInt32));
-        LLVMTypeRef dst = to_llvm_type(dst_tid);
-        LLVMTypeRef src_ty = LLVMTypeOf(src);
-        LLVMTypeKind stk = LLVMGetTypeKind(src_ty);
-        LLVMTypeKind dtk = LLVMGetTypeKind(dst);
+        llvm::Type* dst = llvm::unwrap(to_llvm_type(dst_tid));
+        llvm::Type* src_ty = src->getType();
+
+        bool src_float = src_ty->isFloatingPointTy();
+        bool dst_float = dst->isFloatingPointTy();
 
         // одинаковые типы
-        if (stk == dtk && LLVMGetIntTypeWidth(src_ty) == LLVMGetIntTypeWidth(dst))
-            return src;
+        if (src_ty == dst)
+            return llvm::wrap(src);
 
-        // float ↔ int
-        if (stk == LLVMFloatTypeKind || stk == LLVMDoubleTypeKind) {
-            if (dtk == LLVMIntegerTypeKind)
-                return LLVMBuildFPToSI(builder, src, dst, "cast");
-            // float → float (fpext/fptrunc)
-            if (LLVMGetIntTypeWidth(src_ty) < LLVMGetIntTypeWidth(dst) ||
-                stk == LLVMFloatTypeKind)
-                return LLVMBuildFPExt(builder, src, dst, "cast");
-            return LLVMBuildFPTrunc(builder, src, dst, "cast");
+        // float → int
+        if (src_float && dst->isIntegerTy())
+            return llvm::wrap(B().CreateFPToSI(src, dst, "cast"));
+        // int → float
+        if (src_ty->isIntegerTy() && dst_float)
+            return llvm::wrap(B().CreateSIToFP(src, dst, "cast"));
+        // float → float (fpext/fptrunc)
+        if (src_float && dst_float) {
+            if (src_ty->getPrimitiveSizeInBits() < dst->getPrimitiveSizeInBits())
+                return llvm::wrap(B().CreateFPExt(src, dst, "cast"));
+            return llvm::wrap(B().CreateFPTrunc(src, dst, "cast"));
         }
-        if (dtk == LLVMFloatTypeKind || dtk == LLVMDoubleTypeKind)
-            return LLVMBuildSIToFP(builder, src, dst, "cast");
 
-        // int ↔ int (sext/trunc)
-        if (LLVMGetIntTypeWidth(src_ty) < LLVMGetIntTypeWidth(dst))
-            return LLVMBuildSExt(builder, src, dst, "cast");
-        return LLVMBuildTrunc(builder, src, dst, "cast");
+        // int → int (sext/trunc)
+        if (src_ty->getIntegerBitWidth() < dst->getIntegerBitWidth())
+            return llvm::wrap(B().CreateSExt(src, dst, "cast"));
+        return llvm::wrap(B().CreateTrunc(src, dst, "cast"));
     }
 
 
