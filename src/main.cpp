@@ -10,18 +10,35 @@ int main(int argc, char **argv) {
     bool dump_ast    = false;
     bool dump_sema   = false;
     const char* path = nullptr;
+    const char* output_path = nullptr;
 
     for (int i = 1; i < argc; ++i) {
         std::string_view a = argv[i];
         if      (a == "--dump-tokens") dump_tokens = true;
         else if (a == "--dump-ast")   dump_ast   = true;
         else if (a == "--dump-sema")  dump_sema  = true;
-        else                           path = argv[i];
+        else if (a == "-o" && i + 1 < argc) {
+            output_path = argv[++i];
+        }
+        else if (!path) {
+            path = argv[i];
+        }
+        else {
+            std::cerr << "unexpected argument: " << a << '\n';
+            return 1;
+        }
     }
 
     if (!path) {
-        std::cerr << "usage: Ferrous [--dump-tokens|--dump-ast|--check|--dump-sema] <file.fer>\n";
+        std::cerr << "usage: Ferrous [--dump-tokens|--dump-ast|--dump-sema] [-o <out>] <file.fer>\n";
         return 1;
+    }
+
+    if (!output_path) {
+        static std::string default_out;
+        default_out = path;
+        default_out += ".out";
+        output_path = default_out.c_str();
     }
 
     std::ifstream in(path);
@@ -68,5 +85,29 @@ int main(int argc, char **argv) {
         Printer::print_decls_with_types(decls, sema.aast, std::cout);
         return bag.has_errors() ? 1 : 0;
     }
+
+    Semantic::DiagBag bag;
+    Parser::Parser p(std::move(tokens), bag);
+    auto decls = p.parse();
+
+    if (bag.has_errors()) {
+        Semantic::print_diagnostics(bag, path, std::cerr);
+        return 1;
+    }
+
+    Semantic::Semantic sema;
+    auto sema_bag = sema.check(decls);
+
+    // ошибки парсера и семантики в один поток
+    for (const auto& d : sema_bag.all()) {
+        bag.error(d.line, d.column, d.message);
+    }
+
+    if (bag.has_errors()) {
+        Semantic::print_diagnostics(bag, path, std::cerr);
+        return 1;
+    }
+
+    std::cerr << path << ": compilation successful → " << output_path << "\n";
     return 0;
 }

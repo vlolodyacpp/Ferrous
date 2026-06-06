@@ -886,6 +886,33 @@ namespace Semantic {
 
             // символьный литерал
             if constexpr (std::is_same_v<T, Parser::LitCharExpr>) {
+                std::string_view raw = n.value;
+                std::uint32_t codepoint = 0;
+
+                if (raw.size() >= 2 && raw[0] == '\\') {
+                    // escape-последовательность
+                    if (raw == "\\n")      codepoint = 0x0A;
+                    else if (raw == "\\t") codepoint = 0x09;
+                    else if (raw == "\\r") codepoint = 0x0D;
+                    else if (raw == "\\\\") codepoint = '\\';
+                    else if (raw == "\\'") codepoint = '\'';
+                    else if (raw == "\\\"") codepoint = '"';
+                    else if (raw == "\\0") codepoint = 0x00;
+                    else {
+                        diag.error(0, 0, "unknown escape sequence '\\"
+                            + std::string(raw.substr(1)) + "'");
+                        return registry.error_type();
+                    }
+                } else if (raw.size() == 1) {
+                    codepoint = static_cast<std::uint8_t>(raw[0]);
+                } else {
+                    diag.error(0, 0, "invalid char literal");
+                    return registry.error_type();
+                }
+
+                if (codepoint > 0x10FFFF) {
+                    diag.error(0, 0, "char codepoint out of range");
+                }
                 return registry.builtin(TokenKind::KwChar);
             }
 

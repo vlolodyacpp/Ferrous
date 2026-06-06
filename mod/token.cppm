@@ -27,6 +27,8 @@ export namespace Lexer {
         KwTrue, // true
         KwFalse, // false
         KwVoid, // void
+        KwNaN,
+        KwInf,
 
 
         KwChar, // char

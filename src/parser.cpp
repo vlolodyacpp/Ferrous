@@ -176,6 +176,14 @@ namespace Parser {
             advance();
             return parse_postfix(Expr{LitBoolExpr{false}});
         }
+        if (t.kind == TokenKind::KwNaN) {
+            advance();
+            return parse_postfix(Expr{LitFloatExpr{"nan"}});
+        }
+        if (t.kind == TokenKind::KwInf) {
+            advance();
+            return parse_postfix(Expr{LitFloatExpr{"inf"}});
+        }
         if (t.kind == TokenKind::SepLBracket) {
             advance();
             std::vector<Expr> elems;

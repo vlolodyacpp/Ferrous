@@ -87,19 +87,21 @@ namespace Lexer {
 
 
         // hex/binary rule
+        bool is_hex_or_binary = false;
         if (peek() == '0' && (peek_next() == 'x' || peek_next() == 'X')) {
             advance();
             advance();          // 0x, 0X
             while (std::isxdigit(peek())) advance();
-        }
-        if (peek() == '0' && (peek_next() == 'b' || peek_next() == 'B')) {
+            is_hex_or_binary = true;
+        } else if (peek() == '0' && (peek_next() == 'b' || peek_next() == 'B')) {
             advance();
             advance();          // 0b, 0B
             while (peek() == '0' || peek() == '1') advance();
+            is_hex_or_binary = true;
         }
-
-
-        while (std::isdigit(peek())) advance();
+        if (!is_hex_or_binary) {
+            while (std::isdigit(peek())) advance();
+        }
 
         // float/exp
         if ((peek() == '.' && std::isdigit(peek_next())) || peek_next() == 'e' || peek_next() == 'E') {
@@ -310,6 +312,8 @@ namespace Lexer {
         {"false", TokenKind::KwFalse},
         {"void", TokenKind::KwVoid},
         {"char", TokenKind::KwChar},
+        {"nan", TokenKind::KwNaN},
+        {"inf", TokenKind::KwInf},
 
         {"int8", TokenKind::KwInt8},
         {"int16", TokenKind::KwInt16},

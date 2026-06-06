@@ -24,6 +24,9 @@ namespace Printer {
             case TokenKind::KwTrue:        return "KwTrue";
             case TokenKind::KwFalse:       return "KwFalse";
             case TokenKind::KwVoid:        return "KwVoid";
+            case TokenKind::KwNaN:         return "KwNan";
+            case TokenKind::KwInf:         return "KwInf";
+
             case TokenKind::KwInt8:        return "KwInt8";
             case TokenKind::KwInt16:       return "KwInt16";
             case TokenKind::KwInt32:       return "KwInt32";
