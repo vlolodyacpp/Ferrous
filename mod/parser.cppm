@@ -1,6 +1,10 @@
-export module Ferrous.Parser;
+module;
+#include <cstddef>
+#include <optional>
+#include <string_view>
+#include <vector>
 
-import std;
+export module Ferrous.Parser;
 export import Ferrous.AST;
 export import Ferrous.Token;
 export import Ferrous.Semantic;

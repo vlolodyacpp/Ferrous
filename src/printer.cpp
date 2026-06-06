@@ -1,3 +1,12 @@
+module;
+#include <cstddef>
+#include <ostream>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <variant>
+#include <vector>
+
 module Ferrous.Printer;
 import Ferrous.Lexer;
 

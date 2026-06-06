@@ -1,4 +1,10 @@
-import std;
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <utility>
+
 import Ferrous.Token;
 import Ferrous.Lexer;
 import Ferrous.Parser;

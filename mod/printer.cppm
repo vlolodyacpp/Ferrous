@@ -1,6 +1,9 @@
-export module Ferrous.Printer;
+module;
+#include <ostream>
+#include <string_view>
+#include <vector>
 
-import std;
+export module Ferrous.Printer;
 export import Ferrous.Token;
 export import Ferrous.AST;
 export import Ferrous.Semantic;

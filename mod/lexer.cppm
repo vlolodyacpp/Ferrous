@@ -1,6 +1,11 @@
-export module Ferrous.Lexer;
+module;
+#include <cstddef>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
-import std;
+export module Ferrous.Lexer;
 export import Ferrous.Token;
 
 export namespace Lexer {

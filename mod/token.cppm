@@ -1,6 +1,8 @@
-export module Ferrous.Token;
+module;
+#include <cstddef>
+#include <string_view>
 
-import std;
+export module Ferrous.Token;
 
 export namespace Lexer {
 

@@ -1,7 +1,17 @@
 module;
+#include <cstddef>
+#include <cstdint>
 #include <deque>
+#include <optional>
+#include <ostream>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <variant>
+#include <vector>
+
 export module Ferrous.Semantic;
-import std;
 export import Ferrous.AST;
 
 export namespace Semantic {

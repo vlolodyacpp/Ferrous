@@ -1,6 +1,16 @@
-module Ferrous.Parser;
+module;
+#include <format>
+#include <iostream>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_set>
+#include <utility>
+#include <variant>
+#include <vector>
 
-import std;
+module Ferrous.Parser;
 
 namespace Parser {
     namespace {

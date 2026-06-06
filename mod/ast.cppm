@@ -1,6 +1,12 @@
-export module Ferrous.AST;
+module;
+#include <memory>
+#include <optional>
+#include <string_view>
+#include <utility>
+#include <variant>
+#include <vector>
 
-import std;
+export module Ferrous.AST;
 export import Ferrous.Token;
 
 export namespace Parser {

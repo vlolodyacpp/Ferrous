@@ -1,11 +1,21 @@
 module;
+#include <charconv>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <iostream>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <variant>
+#include <vector>
 #include <llvm-c/Core.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/Target.h>
 
 module Ferrous.Codegen;
-import std;
 import Ferrous.Printer;
 namespace Codegen {
 

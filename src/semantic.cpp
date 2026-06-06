@@ -1,5 +1,21 @@
+module;
+#include <charconv>
+#include <cstddef>
+#include <cstdint>
+#include <format>
+#include <functional>
+#include <optional>
+#include <ostream>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <variant>
+#include <vector>
+
 module Ferrous.Semantic;
-import std;
+
 namespace Semantic {
 
     using TokenKind = Lexer::TokenKind;

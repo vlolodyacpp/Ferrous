@@ -1,6 +1,13 @@
-module Ferrous.Lexer;
+module;
+#include <cctype>
+#include <cstddef>
+#include <iostream>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
-import std;
+module Ferrous.Lexer;
 
 namespace Lexer {
 
