@@ -62,6 +62,15 @@ namespace Codegen {
         // маппинг Ferrous → LLVM
         LLVMTypeRef to_llvm_type(Semantic::TypeID) const;
 
+        // манглинг по Ferrous-типам (одинаков в declare и в gen_call)
+        std::string mangle(const std::string& base,
+                           const std::vector<Semantic::TypeID>& params) const {
+            std::string m = base;
+            for (auto tid : params)
+                m += "_" + types->name(types->resolve_alias(tid));
+            return m;
+        }
+
         // таблица функций: имя → LLVM-функция + её сигнатура
         std::unordered_map<std::string, LLVMValueRef> functions;
         std::unordered_map<std::string, LLVMTypeRef> function_types;
@@ -94,12 +103,15 @@ namespace Codegen {
         void declare_runtime_functions();
         void declare_structs(const std::vector<Parser::Decl>& decls);
         void declare_functions(const std::vector<Parser::Decl>& decls);
-        void declare_functions_rec(const std::vector<Parser::Decl>& decls);
+        void declare_functions_rec(const std::vector<Parser::Decl>& decls,
+                                   const std::string& prefix = "");
 
         // define-фаза
         void define_functions(const std::vector<Parser::Decl>& decls);
-        void define_functions_rec(const std::vector<Parser::Decl>& decls);
-        void define_function(const Parser::FnDecl& fn);
+        void define_functions_rec(const std::vector<Parser::Decl>& decls,
+                                  const std::string& prefix = "");
+        void define_function(const Parser::FnDecl& fn,
+                             const std::string& prefix = "");
 
         // генерация выражений
         LLVMValueRef gen_expr(const Parser::Expr& e);
@@ -352,49 +364,51 @@ namespace Codegen {
     }
 
     // регистрация функций пользователя (main — без манглинга, остальные — с манглингом по типам)
-    void Codegen::Impl::declare_functions_rec(const std::vector<Parser::Decl>& decls) {
+    void Codegen::Impl::declare_functions_rec(const std::vector<Parser::Decl>& decls,
+                                              const std::string& prefix) {
         for (const auto& d : decls) {
             if (auto* fn = std::get_if<Parser::FnDecl>(&d.node)) {
-                std::string name(fn->name);
+                std::string name = prefix + std::string(fn->name);
 
-                // main не манглим
+                // main не манглим (только настоящий top-level entry)
                 if (name == "main") {
                     Semantic::TypeID rtid = fn->return_type
                         ? resolve_typeid(*fn->return_type, *types,
                             types->builtin(TokenKind::KwInt32))
                         : types->builtin(TokenKind::KwInt32);
-                    LLVMTypeRef rt = to_llvm_type(rtid);
-                    LLVMTypeRef ft = LLVMFunctionType(rt, nullptr, 0, false);
-                    functions["main"] = LLVMAddFunction(mod, "main", ft);
-                    function_types["main"] = ft;
+                    llvm::Type* rt = llvm::unwrap(to_llvm_type(rtid));
+                    llvm::FunctionType* ft = llvm::FunctionType::get(rt, false);
+                    functions["main"] = llvm::wrap(llvm::Function::Create(
+                        ft, llvm::Function::ExternalLinkage, "main", &M()));
+                    function_types["main"] = llvm::wrap(ft);
                     continue;
                 }
 
-                // манглинг: name + типы параметров для перегрузок
-                std::string mangled = name;
-                std::vector<LLVMTypeRef> param_types;
+                // манглинг: name + Ferrous-типы параметров для перегрузок
+                std::vector<Semantic::TypeID> ptids;
+                std::vector<llvm::Type*> param_types;
                 for (const auto& [pname, ptype] : fn->params) {
                     auto tid = resolve_typeid(ptype, *types,
                         types->builtin(TokenKind::KwVoid));
-                    LLVMTypeRef lt = to_llvm_type(tid);
-                    param_types.push_back(lt);
-                    mangled += "_" + std::to_string(
-                        static_cast<int>(LLVMGetTypeKind(lt)));
+                    ptids.push_back(tid);
+                    param_types.push_back(llvm::unwrap(to_llvm_type(tid)));
                 }
+                std::string mangled = mangle(name, ptids);
 
                 Semantic::TypeID rtid = fn->return_type
                     ? resolve_typeid(*fn->return_type, *types,
                         types->void_type())
                     : types->void_type();
-                LLVMTypeRef rt = to_llvm_type(rtid);
+                llvm::Type* rt = llvm::unwrap(to_llvm_type(rtid));
 
-                LLVMTypeRef ft = LLVMFunctionType(rt, param_types.data(),
-                    static_cast<unsigned>(param_types.size()), false);
-                functions[mangled] = LLVMAddFunction(mod, mangled.c_str(), ft);
-                function_types[mangled] = ft;
+                llvm::FunctionType* ft = llvm::FunctionType::get(rt, param_types, false);
+                functions[mangled] = llvm::wrap(llvm::Function::Create(
+                    ft, llvm::Function::ExternalLinkage, mangled, &M()));
+                function_types[mangled] = llvm::wrap(ft);
             }
             if (auto* ns = std::get_if<Parser::NameSpaceDecl>(&d.node))
-                declare_functions_rec(ns->decls);
+                declare_functions_rec(ns->decls,
+                    prefix + std::string(ns->name) + "::");
         }
     }
 
@@ -738,10 +752,15 @@ namespace Codegen {
             return LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false);
         }
 
-        // аргументы
+        // аргументы (значения + Ferrous-типы из аннотаций для манглинга)
         std::vector<LLVMValueRef> args;
-        for (const auto& arg : n.args)
+        std::vector<Semantic::TypeID> arg_tids;
+        for (const auto& arg : n.args) {
             args.push_back(gen_expr(arg));
+            auto it = aast->expr_type.find(&arg);
+            arg_tids.push_back(it != aast->expr_type.end()
+                ? it->second : types->builtin(TokenKind::KwVoid));
+        }
 
         // встроенные функции
         if (fn_name == "print" || fn_name == "println" ||
@@ -751,31 +770,27 @@ namespace Codegen {
             return gen_builtin_call(fn_name, args, 0);
         }
 
-        // пользовательская функция — ищем по манглингу
-        std::string mangled = fn_name;
-        for (const auto& a : args) {
-            LLVMTypeRef at = LLVMTypeOf(a);
-            mangled += "_" + std::to_string(static_cast<int>(LLVMGetTypeKind(at)));
+        // пользовательская функция — манглинг по Ferrous-типам
+        std::string mangled = mangle(fn_name, arg_tids);
+
+        llvm::Function* callee = nullptr;
+        llvm::FunctionType* ft = nullptr;
+        if (auto it = functions.find(mangled); it != functions.end()) {
+            callee = llvm::cast<llvm::Function>(llvm::unwrap(it->second));
+            ft = llvm::cast<llvm::FunctionType>(llvm::unwrap(function_types[mangled]));
+        } else if (auto it = functions.find(fn_name); it != functions.end()) {
+            callee = llvm::cast<llvm::Function>(llvm::unwrap(it->second));
+            if (auto tit = function_types.find(fn_name); tit != function_types.end())
+                ft = llvm::cast<llvm::FunctionType>(llvm::unwrap(tit->second));
         }
 
-        LLVMValueRef callee = nullptr;
-        if (auto it = functions.find(mangled); it != functions.end())
-            callee = it->second;
-        else if (auto it = functions.find(fn_name); it != functions.end())
-            callee = it->second;
+        if (!callee || !ft)
+            return i32_zero();
 
-        if (!callee)
-            return LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false);
-
-        LLVMTypeRef ft = nullptr;
-        if (auto tit = function_types.find(mangled); tit != function_types.end())
-            ft = tit->second;
-        else if (auto tit = function_types.find(fn_name); tit != function_types.end())
-            ft = tit->second;
-        if (!ft) ft = LLVMFunctionType(LLVMInt32TypeInContext(ctx), nullptr, 0, false);
-
-        return LLVMBuildCall2(builder, ft, callee, args.data(),
-            static_cast<unsigned>(args.size()), "");
+        std::vector<llvm::Value*> cargs;
+        cargs.reserve(args.size());
+        for (auto a : args) cargs.push_back(llvm::unwrap(a));
+        return llvm::wrap(B().CreateCall(ft, callee, cargs, ""));
     }
 
     // индексация массива: bounds check + GEP + Load
@@ -1213,22 +1228,21 @@ namespace Codegen {
     // ── define_function ────────────────────────────────────────────────
 
     // генерация тела функции: параметры → allocas, обход тела
-    void Codegen::Impl::define_function(const Parser::FnDecl& fn) {
-        std::string name(fn.name);
+    void Codegen::Impl::define_function(const Parser::FnDecl& fn,
+                                        const std::string& prefix) {
+        std::string name = prefix + std::string(fn.name);
         LLVMValueRef llvm_fn = nullptr;
         if (name == "main") {
             auto m_it = functions.find("main");
             if (m_it != functions.end()) llvm_fn = m_it->second;
             else return;
         } else {
-            std::string mangled = name;
-            for (const auto& [pname, ptype] : fn.params) {
-                auto tid = resolve_typeid(ptype, *types,
-                    types->builtin(TokenKind::KwVoid));
-                LLVMTypeRef lt = to_llvm_type(tid);
-                mangled += "_" + std::to_string(
-                    static_cast<int>(LLVMGetTypeKind(lt)));
-            }
+            // тот же манглинг по Ferrous-типам, что и в declare/gen_call
+            std::vector<Semantic::TypeID> ptids;
+            for (const auto& [pname, ptype] : fn.params)
+                ptids.push_back(resolve_typeid(ptype, *types,
+                    types->builtin(TokenKind::KwVoid)));
+            std::string mangled = mangle(name, ptids);
             auto it = functions.find(mangled);
             if (it != functions.end()) llvm_fn = it->second;
             else return;
@@ -1277,14 +1291,15 @@ namespace Codegen {
         cg_fn = nullptr;
     }
 
-    // ── define_functions ───────────────────────────────────────────────
 
-    void Codegen::Impl::define_functions_rec(const std::vector<Parser::Decl>& decls) {
+    void Codegen::Impl::define_functions_rec(const std::vector<Parser::Decl>& decls,
+                                             const std::string& prefix) {
         for (const auto& d : decls) {
             if (auto* fn = std::get_if<Parser::FnDecl>(&d.node))
-                define_function(*fn);
+                define_function(*fn, prefix);
             if (auto* ns = std::get_if<Parser::NameSpaceDecl>(&d.node))
-                define_functions_rec(ns->decls);
+                define_functions_rec(ns->decls,
+                    prefix + std::string(ns->name) + "::");
         }
     }
 
