@@ -1,14 +1,16 @@
 module;
 #include <charconv>
 #include <cstddef>
-#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 #include <llvm-c/Core.h>
@@ -20,6 +22,107 @@ import Ferrous.Printer;
 namespace Codegen {
 
     using TokenKind = Lexer::TokenKind;
+
+    // область видимости кодогена
+    struct CGScope {
+        CGScope* parent;
+        std::unordered_map<std::string, LLVMValueRef> vars;
+        std::unordered_map<std::string, LLVMTypeRef> var_types;
+    };
+
+    // реализация кодогенератора LLVM-типы видны только здесь
+    struct Codegen::Impl {
+        // LLVM
+        LLVMContextRef ctx = nullptr;
+        LLVMModuleRef mod = nullptr;
+        LLVMBuilderRef builder = nullptr;
+
+        // аннотации от семантики
+        const Semantic::AnnotatedAST* aast = nullptr;
+        const Semantic::TypeRegistry* types = nullptr;
+
+        // маппинг Ferrous → LLVM
+        LLVMTypeRef to_llvm_type(Semantic::TypeID) const;
+
+        // таблица функций: имя → LLVM-функция + её сигнатура
+        std::unordered_map<std::string, LLVMValueRef> functions;
+        std::unordered_map<std::string, LLVMTypeRef> function_types;
+
+        // текущая LLVM-функция
+        LLVMValueRef cg_fn = nullptr;
+        Semantic::TypeID cg_return_type{};
+
+        // стек областей видимости
+        std::deque<CGScope> scope_storage;
+        CGScope* cg_current_scope = nullptr;
+
+        void push_cg_scope();
+        void pop_cg_scope();
+        LLVMValueRef create_entry_alloca(LLVMValueRef fn,
+                                         const std::string& name,
+                                         LLVMTypeRef type);
+
+        // флаги для break/continue
+        std::vector<LLVMBasicBlockRef> break_stack;
+        std::vector<LLVMBasicBlockRef> continue_stack;
+        bool cg_in_loop = false;
+
+        // главный вход
+        void generate(const std::vector<Parser::Decl>& decls,
+                      const Semantic::AnnotatedAST& aast,
+                      const std::string& output_path);
+
+        // declare-фаза
+        void declare_runtime_functions();
+        void declare_structs(const std::vector<Parser::Decl>& decls);
+        void declare_functions(const std::vector<Parser::Decl>& decls);
+        void declare_functions_rec(const std::vector<Parser::Decl>& decls);
+
+        // define-фаза
+        void define_functions(const std::vector<Parser::Decl>& decls);
+        void define_functions_rec(const std::vector<Parser::Decl>& decls);
+        void define_function(const Parser::FnDecl& fn);
+
+        // генерация выражений
+        LLVMValueRef gen_expr(const Parser::Expr& e);
+        LLVMValueRef gen_lit_int(const Parser::LitIntExpr& n);
+        LLVMValueRef gen_lit_float(const Parser::LitFloatExpr& n);
+        LLVMValueRef gen_lit_bool(const Parser::LitBoolExpr& n);
+        LLVMValueRef gen_lit_string(const Parser::LitStringExpr& n);
+        LLVMValueRef gen_lit_char(const Parser::LitCharExpr& n);
+        LLVMValueRef gen_ident(const Parser::IdentExpr& n);
+        LLVMValueRef gen_path(const Parser::PathExpr& n);
+        LLVMValueRef gen_unary(const Parser::UnaryExpr& n);
+        LLVMValueRef gen_binary(const Parser::BinaryExpr& n);
+        LLVMValueRef gen_group(const Parser::GroupExpr& n);
+        LLVMValueRef gen_cast(const Parser::CastExpr& n);
+        LLVMValueRef gen_call(const Parser::CallExpr& n);
+        LLVMValueRef gen_index(const Parser::IndexExpr& n);
+        LLVMValueRef gen_field(const Parser::FieldExpr& n);
+        LLVMValueRef gen_array_lit(const Parser::ArrayLitExpr& n);
+        LLVMValueRef gen_struct_lit(const Parser::StructLitExpr& n);
+
+        // указатель на lvalue (для присваивания)
+        LLVMValueRef gen_lvalue_ptr(const Parser::Expr& e);
+
+        // генерация инструкций
+        void gen_stmt(const Parser::Stmt& s);
+        void gen_let(const Parser::LetStmt& n);
+        void gen_expr_stmt(const Parser::ExprStmt& n);
+        void gen_block(const Parser::BlockStmt& n);
+        void gen_if(const Parser::IfStmt& n);
+        void gen_while(const Parser::WhileStmt& n);
+        void gen_return(const Parser::ReturnStmt& n);
+        void gen_break();
+        void gen_continue();
+
+        // встроенные функции
+        LLVMValueRef gen_builtin_call(const std::string& name,
+                                      const std::vector<LLVMValueRef>& args,
+                                      std::size_t line);
+
+        ~Impl();
+    };
 
     // TypeRef → TypeID (для codegen, аналог Semantic::resolve_type)
     static Semantic::TypeID resolve_typeid(
@@ -39,18 +142,24 @@ namespace Codegen {
         }, tr.node);
     }
 
-    // конструктор по умолчанию — все ресурсы создаются в generate()
-    Codegen::Codegen() = default;
+    // PIMPL-обёртки (публичный класс лишь делегирует в Impl)
+    Codegen::Codegen() : impl(std::make_unique<Impl>()) {}
+    Codegen::~Codegen() = default;
+    void Codegen::generate(const std::vector<Parser::Decl>& decls,
+                           const Semantic::AnnotatedAST& aast,
+                           const std::string& output_path) {
+        impl->generate(decls, aast, output_path);
+    }
 
     // освобождение LLVM-ресурсов
-    Codegen::~Codegen() {
+    Codegen::Impl::~Impl() {
         if (builder) { LLVMDisposeBuilder(builder); builder = nullptr; }
         if (mod)     { LLVMDisposeModule(mod);     mod = nullptr;     }
         if (ctx)     { LLVMContextDispose(ctx);     ctx = nullptr;    }
     }
 
     // преобразование Ferrous-типа в LLVM-тип
-    LLVMTypeRef Codegen::to_llvm_type(Semantic::TypeID tid) const {
+    LLVMTypeRef Codegen::Impl::to_llvm_type(Semantic::TypeID tid) const {
         // string = { i8*, i64 }
         if (types->equal(tid, types->builtin(TokenKind::KwString))) {
             LLVMTypeRef fields[] = {
@@ -123,7 +232,7 @@ namespace Codegen {
     }
 
     // размещает alloca в entry-блоке функции (до первой инструкции)
-    LLVMValueRef Codegen::create_entry_alloca(LLVMValueRef fn,
+    LLVMValueRef Codegen::Impl::create_entry_alloca(LLVMValueRef fn,
                                               const std::string& name,
                                               LLVMTypeRef type) {
         LLVMBuilderRef tmp = LLVMCreateBuilderInContext(ctx);
@@ -139,20 +248,20 @@ namespace Codegen {
     }
 
     // создание дочернего скоупа (при входе в блок)
-    void Codegen::push_cg_scope() {
+    void Codegen::Impl::push_cg_scope() {
         auto& s = scope_storage.emplace_back();
         s.parent = cg_current_scope;
         cg_current_scope = &s;
     }
 
-    void Codegen::pop_cg_scope() {
+    void Codegen::Impl::pop_cg_scope() {
         if (cg_current_scope)
             cg_current_scope = cg_current_scope->parent;
     }
 
     // объявление всех runtime-функций в модуле LLVM
     // panic, bounds/div check, print/println, input, строковые операции
-    void Codegen::declare_runtime_functions() {
+    void Codegen::Impl::declare_runtime_functions() {
         LLVMTypeRef void_ty  = LLVMVoidTypeInContext(ctx);
         LLVMTypeRef i8p_ty   = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
         LLVMTypeRef i64_ty   = LLVMInt64TypeInContext(ctx);
@@ -201,7 +310,7 @@ namespace Codegen {
     }
 
     // регистрация структур в модуле: LLVMStructCreateNamed + поля
-    void Codegen::declare_structs(const std::vector<Parser::Decl>& decls) {
+    void Codegen::Impl::declare_structs(const std::vector<Parser::Decl>& decls) {
         for (const auto& d : decls) {
             if (auto* st = std::get_if<Parser::StructDecl>(&d.node)) {
                 std::string name(st->name);
@@ -232,7 +341,7 @@ namespace Codegen {
     }
 
     // регистрация функций пользователя (main — без манглинга, остальные — с манглингом по типам)
-    void Codegen::declare_functions_rec(const std::vector<Parser::Decl>& decls) {
+    void Codegen::Impl::declare_functions_rec(const std::vector<Parser::Decl>& decls) {
         for (const auto& d : decls) {
             if (auto* fn = std::get_if<Parser::FnDecl>(&d.node)) {
                 std::string name(fn->name);
@@ -278,14 +387,14 @@ namespace Codegen {
         }
     }
 
-    void Codegen::declare_functions(const std::vector<Parser::Decl>& decls) {
+    void Codegen::Impl::declare_functions(const std::vector<Parser::Decl>& decls) {
         declare_functions_rec(decls);
     }
 
 
 
     // switch по std::variant — делегирует конкретному gen_* методу
-    LLVMValueRef Codegen::gen_expr(const Parser::Expr& e) {
+    LLVMValueRef Codegen::Impl::gen_expr(const Parser::Expr& e) {
         return std::visit([&](const auto& n) -> LLVMValueRef {
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Parser::LitIntExpr>)
@@ -328,7 +437,7 @@ namespace Codegen {
 
 
     // целочисленный литерал: парсинг (dec/hex/bin) + суффикс → ConstInt
-    LLVMValueRef Codegen::gen_lit_int(const Parser::LitIntExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_lit_int(const Parser::LitIntExpr& n) {
         std::string_view raw = n.value;
         std::uint64_t val = 0;
         int base = 10;
@@ -366,7 +475,7 @@ namespace Codegen {
 
 
     // float-литерал: from_chars + nan/inf → ConstReal
-    LLVMValueRef Codegen::gen_lit_float(const Parser::LitFloatExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_lit_float(const Parser::LitFloatExpr& n) {
         double val = 0.0;
         std::string_view raw = n.value;
 
@@ -391,13 +500,13 @@ namespace Codegen {
     }
 
     // булев литерал → i1: 0 или 1
-    LLVMValueRef Codegen::gen_lit_bool(const Parser::LitBoolExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_lit_bool(const Parser::LitBoolExpr& n) {
         return LLVMConstInt(LLVMInt1TypeInContext(ctx), n.value ? 1 : 0, false);
     }
 
 
     // строковый литерал: GlobalStringPtr + упаковка в {i8*, i64}
-    LLVMValueRef Codegen::gen_lit_string(const Parser::LitStringExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_lit_string(const Parser::LitStringExpr& n) {
         std::string str(n.value);
         LLVMValueRef global = LLVMBuildGlobalStringPtr(builder,
             str.c_str(), "str");
@@ -414,7 +523,7 @@ namespace Codegen {
 
 
     // символьный литерал: разбор escape → i32 codepoint
-    LLVMValueRef Codegen::gen_lit_char(const Parser::LitCharExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_lit_char(const Parser::LitCharExpr& n) {
         std::string_view raw = n.value;
         std::uint32_t cp = 0;
 
@@ -436,7 +545,7 @@ namespace Codegen {
     // ── gen_ident ──────────────────────────────────────────────────────
 
     // загрузка переменной: поиск в цепочке CGScope → Load из alloca
-    LLVMValueRef Codegen::gen_ident(const Parser::IdentExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_ident(const Parser::IdentExpr& n) {
         std::string name(n.value);
         for (CGScope* s = cg_current_scope; s; s = s->parent) {
             auto it = s->vars.find(name);
@@ -453,7 +562,7 @@ namespace Codegen {
     // ── gen_path ───────────────────────────────────────────────────────
 
     // доступ к переменной через namespace: обход CGScope по последнему сегменту
-    LLVMValueRef Codegen::gen_path(const Parser::PathExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_path(const Parser::PathExpr& n) {
         std::string_view last = n.segments.back();
         for (CGScope* s = cg_current_scope; s; s = s->parent) {
             auto it = s->vars.find(std::string(last));
@@ -470,7 +579,7 @@ namespace Codegen {
     // ── gen_unary ──────────────────────────────────────────────────────
 
     // унарный минус (Neg/FNeg) или логическое НЕ (Not)
-    LLVMValueRef Codegen::gen_unary(const Parser::UnaryExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_unary(const Parser::UnaryExpr& n) {
         LLVMValueRef op = gen_expr(*n.operand);
         LLVMTypeKind tk = LLVMGetTypeKind(LLVMTypeOf(op));
 
@@ -487,7 +596,7 @@ namespace Codegen {
     // ── gen_binary ─────────────────────────────────────────────────────
 
     // бинарные операторы: арифметика, сравнения, логика, присваивание, строки
-    LLVMValueRef Codegen::gen_binary(const Parser::BinaryExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_binary(const Parser::BinaryExpr& n) {
         // присваивание
         if (n.op == TokenKind::OpEq) {
             LLVMValueRef rhs = gen_expr(*n.rhs);
@@ -575,17 +684,13 @@ namespace Codegen {
         }
     }
 
-    // ── gen_group ──────────────────────────────────────────────────────
-
     // скобки: прозрачно возвращает inner
-    LLVMValueRef Codegen::gen_group(const Parser::GroupExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_group(const Parser::GroupExpr& n) {
         return gen_expr(*n.inner);
     }
 
-    // ── gen_cast ───────────────────────────────────────────────────────
-
     // приведение типа: SExt/Trunc/SIToFP/FPToSI по таблице
-    LLVMValueRef Codegen::gen_cast(const Parser::CastExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_cast(const Parser::CastExpr& n) {
         LLVMValueRef src = gen_expr(*n.expr);
         Semantic::TypeID dst_tid = resolve_typeid(n.target, *types,
             types->builtin(TokenKind::KwInt32));
@@ -619,7 +724,7 @@ namespace Codegen {
 
 
     // вызов функции: разрешение имени → встроенная или пользовательская
-    LLVMValueRef Codegen::gen_call(const Parser::CallExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_call(const Parser::CallExpr& n) {
         // извлекаем имя функции
         std::string fn_name;
         if (auto* id = std::get_if<Parser::IdentExpr>(&n.call->node))
@@ -674,7 +779,7 @@ namespace Codegen {
     }
 
     // индексация массива: bounds check + GEP + Load
-    LLVMValueRef Codegen::gen_index(const Parser::IndexExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_index(const Parser::IndexExpr& n) {
         LLVMValueRef idx = gen_expr(*n.index);
         LLVMValueRef ptr = gen_lvalue_ptr(*n.array);
 
@@ -711,7 +816,7 @@ namespace Codegen {
 
 
     // доступ к полю структуры: индекс поля из TypeRegistry → GEP + Load
-    LLVMValueRef Codegen::gen_field(const Parser::FieldExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_field(const Parser::FieldExpr& n) {
         LLVMValueRef obj_ptr = gen_lvalue_ptr(*n.object);
         LLVMTypeRef sty = LLVMGetAllocatedType(obj_ptr);
         if (!sty) sty = LLVMTypeOf(obj_ptr);
@@ -745,7 +850,7 @@ namespace Codegen {
     }
 
     // литерал массива: insertvalue каждого элемента в undef
-    LLVMValueRef Codegen::gen_array_lit(const Parser::ArrayLitExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_array_lit(const Parser::ArrayLitExpr& n) {
         auto it = aast->expr_type.find(
             &static_cast<const Parser::Expr&>(
                 *reinterpret_cast<const Parser::Expr*>(&n)));
@@ -764,7 +869,7 @@ namespace Codegen {
 
 
     // литерал структуры: insertvalue каждого поля (индекс из TypeRegistry)
-    LLVMValueRef Codegen::gen_struct_lit(const Parser::StructLitExpr& n) {
+    LLVMValueRef Codegen::Impl::gen_struct_lit(const Parser::StructLitExpr& n) {
         std::string name(n.name);
         LLVMTypeRef sty = LLVMGetTypeByName2(ctx, name.c_str());
         if (!sty) return LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false);
@@ -796,7 +901,7 @@ namespace Codegen {
 
 
     // получение указателя для присваивания: IdentExpr → alloca, FieldExpr → GEP
-    LLVMValueRef Codegen::gen_lvalue_ptr(const Parser::Expr& e) {
+    LLVMValueRef Codegen::Impl::gen_lvalue_ptr(const Parser::Expr& e) {
         return std::visit([&](const auto& n) -> LLVMValueRef {
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Parser::IdentExpr>) {
@@ -847,7 +952,7 @@ namespace Codegen {
 
 
     // switch по std::variant — делегирует конкретному gen_* методу
-    void Codegen::gen_stmt(const Parser::Stmt& s) {
+    void Codegen::Impl::gen_stmt(const Parser::Stmt& s) {
         std::visit([&](const auto& n) {
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Parser::LetStmt>) gen_let(n);
@@ -864,7 +969,7 @@ namespace Codegen {
 
 
     // объявление переменной: alloca + store init, запись в CGScope
-    void Codegen::gen_let(const Parser::LetStmt& n) {
+    void Codegen::Impl::gen_let(const Parser::LetStmt& n) {
         LLVMValueRef init = gen_expr(*n.expr_init);
         LLVMTypeRef ty = LLVMTypeOf(init);
 
@@ -876,13 +981,13 @@ namespace Codegen {
     }
 
 
-    void Codegen::gen_expr_stmt(const Parser::ExprStmt& n) {
+    void Codegen::Impl::gen_expr_stmt(const Parser::ExprStmt& n) {
         gen_expr(*n.expr);
     }
 
 
     // блок: push/pop CGScope, обход инструкций
-    void Codegen::gen_block(const Parser::BlockStmt& n) {
+    void Codegen::Impl::gen_block(const Parser::BlockStmt& n) {
         push_cg_scope();
         for (const auto& s : n.elems) gen_stmt(s);
         pop_cg_scope();
@@ -890,7 +995,7 @@ namespace Codegen {
 
 
     // условный оператор: cond_br с then/else/merge базовыми блоками
-    void Codegen::gen_if(const Parser::IfStmt& n) {
+    void Codegen::Impl::gen_if(const Parser::IfStmt& n) {
         LLVMValueRef cond = gen_expr(*n.condition);
         if (LLVMGetTypeKind(LLVMTypeOf(cond)) != LLVMIntegerTypeKind ||
             LLVMGetIntTypeWidth(LLVMTypeOf(cond)) != 1) {
@@ -926,7 +1031,7 @@ namespace Codegen {
 
 
     // цикл: cond_bb → body_bb → exit_bb, стек break/continue
-    void Codegen::gen_while(const Parser::WhileStmt& n) {
+    void Codegen::Impl::gen_while(const Parser::WhileStmt& n) {
         LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(ctx, cg_fn, "while.cond");
         LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(ctx, cg_fn, "while.body");
         LLVMBasicBlockRef exit_bb = LLVMAppendBasicBlockInContext(ctx, cg_fn, "while.end");
@@ -965,7 +1070,7 @@ namespace Codegen {
 
 
     // возврат из функции: ret val / ret void
-    void Codegen::gen_return(const Parser::ReturnStmt& n) {
+    void Codegen::Impl::gen_return(const Parser::ReturnStmt& n) {
         if (n.value) {
             LLVMValueRef val = gen_expr(*n.value);
             LLVMBuildRet(builder, val);
@@ -976,18 +1081,18 @@ namespace Codegen {
 
 
 
-    void Codegen::gen_break() {
+    void Codegen::Impl::gen_break() {
         LLVMBuildBr(builder, break_stack.back());
     }
 
-    void Codegen::gen_continue() {
+    void Codegen::Impl::gen_continue() {
         LLVMBuildBr(builder, continue_stack.back());
     }
 
 
 
     // встроенные: print/println (диспетчер по типу), input, len, exit, panic, assert
-    LLVMValueRef Codegen::gen_builtin_call(const std::string& name,
+    LLVMValueRef Codegen::Impl::gen_builtin_call(const std::string& name,
                                            const std::vector<LLVMValueRef>& args,
                                            std::size_t line) {
         (void)line;
@@ -1108,7 +1213,7 @@ namespace Codegen {
     // ── define_function ────────────────────────────────────────────────
 
     // генерация тела функции: параметры → allocas, обход тела
-    void Codegen::define_function(const Parser::FnDecl& fn) {
+    void Codegen::Impl::define_function(const Parser::FnDecl& fn) {
         std::string name(fn.name);
         LLVMValueRef llvm_fn = nullptr;
         if (name == "main") {
@@ -1174,7 +1279,7 @@ namespace Codegen {
 
     // ── define_functions ───────────────────────────────────────────────
 
-    void Codegen::define_functions_rec(const std::vector<Parser::Decl>& decls) {
+    void Codegen::Impl::define_functions_rec(const std::vector<Parser::Decl>& decls) {
         for (const auto& d : decls) {
             if (auto* fn = std::get_if<Parser::FnDecl>(&d.node))
                 define_function(*fn);
@@ -1183,14 +1288,14 @@ namespace Codegen {
         }
     }
 
-    void Codegen::define_functions(const std::vector<Parser::Decl>& decls) {
+    void Codegen::Impl::define_functions(const std::vector<Parser::Decl>& decls) {
         define_functions_rec(decls);
     }
 
     // ── generate: главный метод ───────────────────────────────────────
 
     // основной метод: declare → define → verify → запись .ll → clang++ → executable
-    void Codegen::generate(const std::vector<Parser::Decl>& decls,
+    void Codegen::Impl::generate(const std::vector<Parser::Decl>& decls,
                            const Semantic::AnnotatedAST& aast,
                            const std::string& output_path) {
         this->aast = &aast;
