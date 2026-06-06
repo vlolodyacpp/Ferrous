@@ -101,6 +101,7 @@ namespace Parser {
                 return 6;
             case TokenKind::OpStar:
             case TokenKind::OpSlash:
+            case TokenKind::OpPercent:
                 return 7;
             default:
                 return 0;
@@ -233,6 +234,7 @@ namespace Parser {
             auto k = peek().kind;
             if (k == TokenKind::SepLParen) {
                 // f(a, b, c)
+                std::size_t call_line = peek().line;
                 advance();
                 std::vector<Expr> args;
                 if (!check(TokenKind::SepRParen)) {
@@ -244,18 +246,21 @@ namespace Parser {
                 expect(TokenKind::SepRParen);
                 lhs = Expr{CallExpr{
                     std::make_unique<Expr>(std::move(lhs)),
-                    std::move(args)
+                    std::move(args),
+                    call_line
                 }};
                 continue;
             }
             if (k == TokenKind::SepLBracket) {
                 // arr[2]
+                std::size_t idx_line = peek().line;
                 advance();
                 auto index = parse_expr(0);
                 expect(TokenKind::SepRBracket);
                 lhs = Expr{IndexExpr{
                     std::make_unique<Expr>(std::move(lhs)),
                     std::make_unique<Expr>(std::move(index)),
+                    idx_line
                 }};
                 continue;
             }
@@ -338,13 +343,15 @@ namespace Parser {
             if (prec == 0 || prec < min_prec) {
                 break;
             }
+            std::size_t op_line = peek().line;
             advance();
             int next_min = is_right_assoc(op_kind) ? prec : prec + 1;
             Expr rhs = parse_expr(next_min);
             BinaryExpr bin{
                 std::make_unique<Expr>(std::move(lhs)),
                 std::make_unique<Expr>(std::move(rhs)),
-                op_kind
+                op_kind,
+                op_line
             };
             lhs = Expr{std::move(bin)};
         }

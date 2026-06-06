@@ -9,6 +9,7 @@ module;
 #include <memory>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <unordered_map>
 #include <variant>
@@ -23,9 +24,6 @@ module;
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/TargetSelect.h>
-#include <llvm-c/Core.h>
-#include <llvm-c/Analysis.h>
-#include <llvm-c/Target.h>
 
 module Ferrous.Codegen;
 import Ferrous.Printer;
@@ -36,23 +34,23 @@ namespace Codegen {
     // область видимости кодогена
     struct CGScope {
         CGScope* parent;
-        std::unordered_map<std::string, LLVMValueRef> vars;
-        std::unordered_map<std::string, LLVMTypeRef> var_types;
+        std::unordered_map<std::string, llvm::Value*> vars;
+        std::unordered_map<std::string, llvm::Type*> var_types;
     };
 
     // реализация кодогенератора LLVM-типы видны только здесь
     struct Codegen::Impl {
-        // LLVM
-        LLVMContextRef ctx = nullptr;
-        LLVMModuleRef mod = nullptr;
-        LLVMBuilderRef builder = nullptr;
+        // LLVM C++ API — владеющие указатели (освобождаются в ~Impl)
+        llvm::LLVMContext* ctx = nullptr;
+        llvm::Module*      mod = nullptr;
+        llvm::IRBuilder<>* builder = nullptr;
 
-        // мосты C-API ⇄ C++-API на время пошаговой миграции (Фаза 3)
-        llvm::LLVMContext& C() const { return *llvm::unwrap(ctx); }
-        llvm::Module&      M() const { return *llvm::unwrap(mod); }
-        llvm::IRBuilder<>& B() const { return *llvm::unwrap(builder); }
-        LLVMValueRef i32_zero() const {
-            return llvm::wrap(llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), 0));
+        // короткие аксессоры
+        llvm::LLVMContext& C() const { return *ctx; }
+        llvm::Module&      M() const { return *mod; }
+        llvm::IRBuilder<>& B() const { return *builder; }
+        llvm::Value* i32_zero() const {
+            return llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), 0);
         }
         // тип Ferrous-выражения из аннотаций (opaque-pointer-safe источник типов)
         Semantic::TypeID expr_tid(const Parser::Expr* e, Semantic::TypeID fb) const {
@@ -66,7 +64,7 @@ namespace Codegen {
         const Semantic::TypeRegistry* types = nullptr;
 
         // маппинг Ferrous → LLVM
-        LLVMTypeRef to_llvm_type(Semantic::TypeID) const;
+        llvm::Type* to_llvm_type(Semantic::TypeID) const;
 
         // манглинг по Ferrous-типам (одинаков в declare и в gen_call)
         std::string mangle(const std::string& base,
@@ -78,11 +76,11 @@ namespace Codegen {
         }
 
         // таблица функций: имя → LLVM-функция + её сигнатура
-        std::unordered_map<std::string, LLVMValueRef> functions;
-        std::unordered_map<std::string, LLVMTypeRef> function_types;
+        std::unordered_map<std::string, llvm::Value*> functions;
+        std::unordered_map<std::string, llvm::Type*> function_types;
 
         // текущая LLVM-функция
-        LLVMValueRef cg_fn = nullptr;
+        llvm::Value* cg_fn = nullptr;
         Semantic::TypeID cg_return_type{};
 
         // стек областей видимости
@@ -91,13 +89,13 @@ namespace Codegen {
 
         void push_cg_scope();
         void pop_cg_scope();
-        LLVMValueRef create_entry_alloca(LLVMValueRef fn,
+        llvm::Value* create_entry_alloca(llvm::Value* fn,
                                          const std::string& name,
-                                         LLVMTypeRef type);
+                                         llvm::Type* type);
 
         // флаги для break/continue
-        std::vector<LLVMBasicBlockRef> break_stack;
-        std::vector<LLVMBasicBlockRef> continue_stack;
+        std::vector<llvm::BasicBlock*> break_stack;
+        std::vector<llvm::BasicBlock*> continue_stack;
         bool cg_in_loop = false;
 
         // главный вход
@@ -120,26 +118,26 @@ namespace Codegen {
                              const std::string& prefix = "");
 
         // генерация выражений
-        LLVMValueRef gen_expr(const Parser::Expr& e);
-        LLVMValueRef gen_lit_int(const Parser::LitIntExpr& n, const Parser::Expr& e);
-        LLVMValueRef gen_lit_float(const Parser::LitFloatExpr& n, const Parser::Expr& e);
-        LLVMValueRef gen_lit_bool(const Parser::LitBoolExpr& n);
-        LLVMValueRef gen_lit_string(const Parser::LitStringExpr& n);
-        LLVMValueRef gen_lit_char(const Parser::LitCharExpr& n);
-        LLVMValueRef gen_ident(const Parser::IdentExpr& n);
-        LLVMValueRef gen_path(const Parser::PathExpr& n);
-        LLVMValueRef gen_unary(const Parser::UnaryExpr& n);
-        LLVMValueRef gen_binary(const Parser::BinaryExpr& n);
-        LLVMValueRef gen_group(const Parser::GroupExpr& n);
-        LLVMValueRef gen_cast(const Parser::CastExpr& n);
-        LLVMValueRef gen_call(const Parser::CallExpr& n);
-        LLVMValueRef gen_index(const Parser::IndexExpr& n);
-        LLVMValueRef gen_field(const Parser::FieldExpr& n);
-        LLVMValueRef gen_array_lit(const Parser::ArrayLitExpr& n, const Parser::Expr& e);
-        LLVMValueRef gen_struct_lit(const Parser::StructLitExpr& n);
+        llvm::Value* gen_expr(const Parser::Expr& e);
+        llvm::Value* gen_lit_int(const Parser::LitIntExpr& n, const Parser::Expr& e);
+        llvm::Value* gen_lit_float(const Parser::LitFloatExpr& n, const Parser::Expr& e);
+        llvm::Value* gen_lit_bool(const Parser::LitBoolExpr& n);
+        llvm::Value* gen_lit_string(const Parser::LitStringExpr& n);
+        llvm::Value* gen_lit_char(const Parser::LitCharExpr& n);
+        llvm::Value* gen_ident(const Parser::IdentExpr& n);
+        llvm::Value* gen_path(const Parser::PathExpr& n);
+        llvm::Value* gen_unary(const Parser::UnaryExpr& n);
+        llvm::Value* gen_binary(const Parser::BinaryExpr& n);
+        llvm::Value* gen_group(const Parser::GroupExpr& n);
+        llvm::Value* gen_cast(const Parser::CastExpr& n);
+        llvm::Value* gen_call(const Parser::CallExpr& n);
+        llvm::Value* gen_index(const Parser::IndexExpr& n);
+        llvm::Value* gen_field(const Parser::FieldExpr& n);
+        llvm::Value* gen_array_lit(const Parser::ArrayLitExpr& n, const Parser::Expr& e);
+        llvm::Value* gen_struct_lit(const Parser::StructLitExpr& n);
 
         // указатель на lvalue (для присваивания)
-        LLVMValueRef gen_lvalue_ptr(const Parser::Expr& e);
+        llvm::Value* gen_lvalue_ptr(const Parser::Expr& e);
 
         // генерация инструкций
         void gen_stmt(const Parser::Stmt& s);
@@ -153,8 +151,8 @@ namespace Codegen {
         void gen_continue();
 
         // встроенные функции
-        LLVMValueRef gen_builtin_call(const std::string& name,
-                                      const std::vector<LLVMValueRef>& args,
+        llvm::Value* gen_builtin_call(const std::string& name,
+                                      const std::vector<llvm::Value*>& args,
                                       std::size_t line);
 
         ~Impl();
@@ -189,77 +187,77 @@ namespace Codegen {
 
     // освобождение LLVM-ресурсов
     Codegen::Impl::~Impl() {
-        if (builder) { LLVMDisposeBuilder(builder); builder = nullptr; }
-        if (mod)     { LLVMDisposeModule(mod);     mod = nullptr;     }
-        if (ctx)     { LLVMContextDispose(ctx);     ctx = nullptr;    }
+        delete builder; builder = nullptr;
+        delete mod;     mod = nullptr;
+        delete ctx;     ctx = nullptr;
     }
 
     // преобразование Ferrous-типа в LLVM-тип
-    LLVMTypeRef Codegen::Impl::to_llvm_type(Semantic::TypeID tid) const {
+    llvm::Type* Codegen::Impl::to_llvm_type(Semantic::TypeID tid) const {
         llvm::LLVMContext& c = C();
 
         // string = { ptr, i64 }
         if (types->equal(tid, types->builtin(TokenKind::KwString)))
-            return llvm::wrap(llvm::StructType::get(c,
-                { llvm::PointerType::getUnqual(c), llvm::Type::getInt64Ty(c) }));
+            return llvm::StructType::get(c,
+                { llvm::PointerType::getUnqual(c), llvm::Type::getInt64Ty(c) });
 
         // void
         if (types->equal(tid, types->builtin(TokenKind::KwVoid)))
-            return llvm::wrap(llvm::Type::getVoidTy(c));
+            return llvm::Type::getVoidTy(c);
 
         // bool → i1
         if (types->equal(tid, types->builtin(TokenKind::KwBool)))
-            return llvm::wrap(llvm::Type::getInt1Ty(c));
+            return llvm::Type::getInt1Ty(c);
 
         // char → i32 (UTF-32 codepoint)
         if (types->equal(tid, types->builtin(TokenKind::KwChar)))
-            return llvm::wrap(llvm::Type::getInt32Ty(c));
+            return llvm::Type::getInt32Ty(c);
 
         // целые
         if (types->equal(tid, types->builtin(TokenKind::KwInt8)))
-            return llvm::wrap(llvm::Type::getInt8Ty(c));
+            return llvm::Type::getInt8Ty(c);
         if (types->equal(tid, types->builtin(TokenKind::KwInt16)))
-            return llvm::wrap(llvm::Type::getInt16Ty(c));
+            return llvm::Type::getInt16Ty(c);
         if (types->equal(tid, types->builtin(TokenKind::KwInt32)))
-            return llvm::wrap(llvm::Type::getInt32Ty(c));
+            return llvm::Type::getInt32Ty(c);
         if (types->equal(tid, types->builtin(TokenKind::KwInt64)))
-            return llvm::wrap(llvm::Type::getInt64Ty(c));
+            return llvm::Type::getInt64Ty(c);
 
         // беззнаковые (те же LLVM-типы)
         if (types->equal(tid, types->builtin(TokenKind::KwUint8)))
-            return llvm::wrap(llvm::Type::getInt8Ty(c));
+            return llvm::Type::getInt8Ty(c);
         if (types->equal(tid, types->builtin(TokenKind::KwUint16)))
-            return llvm::wrap(llvm::Type::getInt16Ty(c));
+            return llvm::Type::getInt16Ty(c);
         if (types->equal(tid, types->builtin(TokenKind::KwUint32)))
-            return llvm::wrap(llvm::Type::getInt32Ty(c));
+            return llvm::Type::getInt32Ty(c);
         if (types->equal(tid, types->builtin(TokenKind::KwUint64)))
-            return llvm::wrap(llvm::Type::getInt64Ty(c));
+            return llvm::Type::getInt64Ty(c);
 
         // float
         if (types->equal(tid, types->builtin(TokenKind::KwFloat32)))
-            return llvm::wrap(llvm::Type::getFloatTy(c));
+            return llvm::Type::getFloatTy(c);
         if (types->equal(tid, types->builtin(TokenKind::KwFloat64)))
-            return llvm::wrap(llvm::Type::getDoubleTy(c));
+            return llvm::Type::getDoubleTy(c);
 
         // untyped-литералы без контекста → дефолтные типы (защита от краша)
         if (types->is_untyped_int(tid))
-            return llvm::wrap(llvm::Type::getInt32Ty(c));
+            return llvm::Type::getInt32Ty(c);
         if (types->is_untyped_float(tid))
-            return llvm::wrap(llvm::Type::getDoubleTy(c));
+            return llvm::Type::getDoubleTy(c);
 
         // массив
         if (const auto* arr = types->get_array(tid)) {
-            llvm::Type* elem = llvm::unwrap(to_llvm_type(arr->elem));
-            return llvm::wrap(llvm::ArrayType::get(elem,
-                static_cast<std::uint64_t>(arr->size)));
+            llvm::Type* elem = to_llvm_type(arr->elem);
+            return llvm::ArrayType::get(elem,
+                static_cast<std::uint64_t>(arr->size));
         }
 
         // структура
         if (const auto* st = types->get_struct(tid)) {
             std::string name = st->name;
             if (llvm::StructType* sty = llvm::StructType::getTypeByName(c, name))
-                return llvm::wrap(sty);
-            return llvm::wrap(llvm::StructType::create(c, name));
+                return sty;
+            return llvm::StructType::create(c, name);
         }
 
         // псевдоним (разворачиваем)
@@ -269,17 +267,17 @@ namespace Codegen {
 
         // сюда попадать не должны — ошибка в семантике
         std::cerr << "codegen: unhandled type " << types->name(tid) << '\n';
-        return llvm::wrap(llvm::Type::getInt32Ty(c));
+        return llvm::Type::getInt32Ty(c);
     }
 
     // размещает alloca в entry-блоке функции (до первой инструкции)
-    LLVMValueRef Codegen::Impl::create_entry_alloca(LLVMValueRef fn,
+    llvm::Value* Codegen::Impl::create_entry_alloca(llvm::Value* fn,
                                               const std::string& name,
-                                              LLVMTypeRef type) {
-        llvm::Function* f = llvm::cast<llvm::Function>(llvm::unwrap(fn));
+                                              llvm::Type* type) {
+        llvm::Function* f = llvm::cast<llvm::Function>(fn);
         llvm::BasicBlock& entry = f->getEntryBlock();
         llvm::IRBuilder<> tmp(&entry, entry.begin());
-        return llvm::wrap(tmp.CreateAlloca(llvm::unwrap(type), nullptr, name));
+        return tmp.CreateAlloca(type, nullptr, name);
     }
 
     // создание дочернего скоупа (при входе в блок)
@@ -311,8 +309,8 @@ namespace Codegen {
             llvm::FunctionType* ft = llvm::FunctionType::get(ret, params, false);
             llvm::Function* f = llvm::Function::Create(ft,
                 llvm::Function::ExternalLinkage, name, &M());
-            functions[name] = llvm::wrap(f);
-            function_types[name] = llvm::wrap(ft);
+            functions[name] = f;
+            function_types[name] = ft;
         };
 
         // panic + assert
@@ -366,7 +364,7 @@ namespace Codegen {
                             }
                             return types->builtin(TokenKind::KwVoid);
                         }, ftype.node);
-                    field_types.push_back(llvm::unwrap(to_llvm_type(ftid)));
+                    field_types.push_back(to_llvm_type(ftid));
                 }
                 sty->setBody(field_types, false);
             }
@@ -388,11 +386,11 @@ namespace Codegen {
                         ? resolve_typeid(*fn->return_type, *types,
                             types->builtin(TokenKind::KwInt32))
                         : types->builtin(TokenKind::KwInt32);
-                    llvm::Type* rt = llvm::unwrap(to_llvm_type(rtid));
+                    llvm::Type* rt = to_llvm_type(rtid);
                     llvm::FunctionType* ft = llvm::FunctionType::get(rt, false);
-                    functions["main"] = llvm::wrap(llvm::Function::Create(
-                        ft, llvm::Function::ExternalLinkage, "main", &M()));
-                    function_types["main"] = llvm::wrap(ft);
+                    functions["main"] = llvm::Function::Create(
+                        ft, llvm::Function::ExternalLinkage, "main", &M());
+                    function_types["main"] = ft;
                     continue;
                 }
 
@@ -403,7 +401,7 @@ namespace Codegen {
                     auto tid = resolve_typeid(ptype, *types,
                         types->builtin(TokenKind::KwVoid));
                     ptids.push_back(tid);
-                    param_types.push_back(llvm::unwrap(to_llvm_type(tid)));
+                    param_types.push_back(to_llvm_type(tid));
                 }
                 std::string mangled = mangle(name, ptids);
 
@@ -411,12 +409,12 @@ namespace Codegen {
                     ? resolve_typeid(*fn->return_type, *types,
                         types->void_type())
                     : types->void_type();
-                llvm::Type* rt = llvm::unwrap(to_llvm_type(rtid));
+                llvm::Type* rt = to_llvm_type(rtid);
 
                 llvm::FunctionType* ft = llvm::FunctionType::get(rt, param_types, false);
-                functions[mangled] = llvm::wrap(llvm::Function::Create(
-                    ft, llvm::Function::ExternalLinkage, mangled, &M()));
-                function_types[mangled] = llvm::wrap(ft);
+                functions[mangled] = llvm::Function::Create(
+                    ft, llvm::Function::ExternalLinkage, mangled, &M());
+                function_types[mangled] = ft;
             }
             if (auto* ns = std::get_if<Parser::NameSpaceDecl>(&d.node))
                 declare_functions_rec(ns->decls,
@@ -431,8 +429,8 @@ namespace Codegen {
 
 
     // switch по std::variant — делегирует конкретному gen_* методу
-    LLVMValueRef Codegen::Impl::gen_expr(const Parser::Expr& e) {
-        return std::visit([&](const auto& n) -> LLVMValueRef {
+    llvm::Value* Codegen::Impl::gen_expr(const Parser::Expr& e) {
+        return std::visit([&](const auto& n) -> llvm::Value* {
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Parser::LitIntExpr>)
                 return gen_lit_int(n, e);
@@ -474,7 +472,7 @@ namespace Codegen {
 
 
     // целочисленный литерал: парсинг (dec/hex/bin) + суффикс → ConstInt
-    LLVMValueRef Codegen::Impl::gen_lit_int(const Parser::LitIntExpr& n,
+    llvm::Value* Codegen::Impl::gen_lit_int(const Parser::LitIntExpr& n,
                                             const Parser::Expr& e) {
         std::string_view raw = n.value;
         std::uint64_t val = 0;
@@ -506,14 +504,14 @@ namespace Codegen {
             ? it->second : types->builtin(TokenKind::KwInt32);
         tid = types->resolve_alias(tid);
 
-        llvm::Type* lt = llvm::unwrap(to_llvm_type(tid));
+        llvm::Type* lt = to_llvm_type(tid);
         if (!lt->isIntegerTy()) lt = llvm::Type::getInt32Ty(C());
-        return llvm::wrap(llvm::ConstantInt::get(lt, val, false));
+        return llvm::ConstantInt::get(lt, val, false);
     }
 
 
     // float-литерал: from_chars + nan/inf → ConstReal
-    LLVMValueRef Codegen::Impl::gen_lit_float(const Parser::LitFloatExpr& n,
+    llvm::Value* Codegen::Impl::gen_lit_float(const Parser::LitFloatExpr& n,
                                               const Parser::Expr& e) {
         double val = 0.0;
         std::string_view raw = n.value;
@@ -533,36 +531,36 @@ namespace Codegen {
             ? it->second : types->builtin(TokenKind::KwFloat64);
         tid = types->resolve_alias(tid);
 
-        llvm::Type* lt = llvm::unwrap(to_llvm_type(tid));
+        llvm::Type* lt = to_llvm_type(tid);
         if (!lt->isFloatingPointTy()) lt = llvm::Type::getDoubleTy(C());
-        return llvm::wrap(llvm::ConstantFP::get(lt, val));
+        return llvm::ConstantFP::get(lt, val);
     }
 
     // булев литерал → i1: 0 или 1
-    LLVMValueRef Codegen::Impl::gen_lit_bool(const Parser::LitBoolExpr& n) {
-        return llvm::wrap(llvm::ConstantInt::get(
-            llvm::Type::getInt1Ty(C()), n.value ? 1 : 0));
+    llvm::Value* Codegen::Impl::gen_lit_bool(const Parser::LitBoolExpr& n) {
+        return llvm::ConstantInt::get(
+            llvm::Type::getInt1Ty(C()), n.value ? 1 : 0);
     }
 
 
     // строковый литерал: глобальная строка + упаковка в {ptr, i64}
-    LLVMValueRef Codegen::Impl::gen_lit_string(const Parser::LitStringExpr& n) {
+    llvm::Value* Codegen::Impl::gen_lit_string(const Parser::LitStringExpr& n) {
         std::string str(n.value);
         llvm::Value* global = B().CreateGlobalString(str, "str");
         llvm::Value* len = llvm::ConstantInt::get(
             llvm::Type::getInt64Ty(C()), str.size());
 
         llvm::Value* s = llvm::UndefValue::get(
-            llvm::unwrap(to_llvm_type(types->builtin(TokenKind::KwString))));
+            to_llvm_type(types->builtin(TokenKind::KwString)));
         s = B().CreateInsertValue(s, global, {0u});
         s = B().CreateInsertValue(s, len, {1u});
-        return llvm::wrap(s);
+        return s;
     }
 
 
 
     // символьный литерал: разбор escape → i32 codepoint
-    LLVMValueRef Codegen::Impl::gen_lit_char(const Parser::LitCharExpr& n) {
+    llvm::Value* Codegen::Impl::gen_lit_char(const Parser::LitCharExpr& n) {
         std::string_view raw = n.value;
         std::uint32_t cp = 0;
 
@@ -578,19 +576,19 @@ namespace Codegen {
             cp = static_cast<std::uint8_t>(raw[0]);
         }
 
-        return llvm::wrap(llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), cp));
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), cp);
     }
 
     // загрузка переменной: поиск в цепочке CGScope → Load из alloca
-    LLVMValueRef Codegen::Impl::gen_ident(const Parser::IdentExpr& n) {
+    llvm::Value* Codegen::Impl::gen_ident(const Parser::IdentExpr& n) {
         std::string name(n.value);
         for (CGScope* s = cg_current_scope; s; s = s->parent) {
             auto it = s->vars.find(name);
             if (it != s->vars.end()) {
                 auto tit = s->var_types.find(name);
                 llvm::Type* ty = (tit != s->var_types.end())
-                    ? llvm::unwrap(tit->second) : llvm::Type::getInt32Ty(C());
-                return llvm::wrap(B().CreateLoad(ty, llvm::unwrap(it->second), name));
+                    ? tit->second : llvm::Type::getInt32Ty(C());
+                return B().CreateLoad(ty, it->second, name);
             }
         }
         return i32_zero();
@@ -598,15 +596,15 @@ namespace Codegen {
 
 
     // доступ к переменной через namespace: обход CGScope по последнему сегменту
-    LLVMValueRef Codegen::Impl::gen_path(const Parser::PathExpr& n) {
+    llvm::Value* Codegen::Impl::gen_path(const Parser::PathExpr& n) {
         std::string last(n.segments.back());
         for (CGScope* s = cg_current_scope; s; s = s->parent) {
             auto it = s->vars.find(last);
             if (it != s->vars.end()) {
                 auto tit = s->var_types.find(last);
                 llvm::Type* ty = (tit != s->var_types.end())
-                    ? llvm::unwrap(tit->second) : llvm::Type::getInt32Ty(C());
-                return llvm::wrap(B().CreateLoad(ty, llvm::unwrap(it->second), last));
+                    ? tit->second : llvm::Type::getInt32Ty(C());
+                return B().CreateLoad(ty, it->second, last);
             }
         }
         return i32_zero();
@@ -615,38 +613,38 @@ namespace Codegen {
     // ── gen_unary ──────────────────────────────────────────────────────
 
     // унарный минус (Neg/FNeg) или логическое НЕ (Not)
-    LLVMValueRef Codegen::Impl::gen_unary(const Parser::UnaryExpr& n) {
-        llvm::Value* op = llvm::unwrap(gen_expr(*n.operand));
+    llvm::Value* Codegen::Impl::gen_unary(const Parser::UnaryExpr& n) {
+        llvm::Value* op = gen_expr(*n.operand);
 
         if (n.op == TokenKind::OpMinus) {
             if (op->getType()->isFloatingPointTy())
-                return llvm::wrap(B().CreateFNeg(op, "neg"));
-            return llvm::wrap(B().CreateNeg(op, "neg"));
+                return B().CreateFNeg(op, "neg");
+            return B().CreateNeg(op, "neg");
         }
         if (n.op == TokenKind::OpBang)
-            return llvm::wrap(B().CreateNot(op, "not"));
-        return llvm::wrap(op);
+            return B().CreateNot(op, "not");
+        return op;
     }
 
     // бинарные операторы: арифметика, сравнения, логика, присваивание, строки
-    LLVMValueRef Codegen::Impl::gen_binary(const Parser::BinaryExpr& n) {
+    llvm::Value* Codegen::Impl::gen_binary(const Parser::BinaryExpr& n) {
         // присваивание
         if (n.op == TokenKind::OpEq) {
-            llvm::Value* rhs = llvm::unwrap(gen_expr(*n.rhs));
-            llvm::Value* ptr = llvm::unwrap(gen_lvalue_ptr(*n.lhs));
+            llvm::Value* rhs = gen_expr(*n.rhs);
+            llvm::Value* ptr = gen_lvalue_ptr(*n.lhs);
             B().CreateStore(rhs, ptr);
-            return llvm::wrap(rhs);
+            return rhs;
         }
 
-        llvm::Value* lhs = llvm::unwrap(gen_expr(*n.lhs));
-        llvm::Value* rhs = llvm::unwrap(gen_expr(*n.rhs));
+        llvm::Value* lhs = gen_expr(*n.lhs);
+        llvm::Value* rhs = gen_expr(*n.rhs);
         llvm::Type* ty = lhs->getType();
         bool is_float = ty->isFloatingPointTy();
 
         auto call_rt = [&](const char* name, std::vector<llvm::Value*> a,
                            const char* lbl) -> llvm::Value* {
-            auto fn = llvm::cast<llvm::Function>(llvm::unwrap(functions[name]));
-            auto ft = llvm::cast<llvm::FunctionType>(llvm::unwrap(function_types[name]));
+            auto fn = llvm::cast<llvm::Function>(functions[name]);
+            auto ft = llvm::cast<llvm::FunctionType>(function_types[name]);
             return B().CreateCall(ft, fn, a, lbl);
         };
 
@@ -658,70 +656,74 @@ namespace Codegen {
                     llvm::Value* a_len = B().CreateExtractValue(lhs, {1u}, "a.len");
                     llvm::Value* b_ptr = B().CreateExtractValue(rhs, {0u}, "b.ptr");
                     llvm::Value* b_len = B().CreateExtractValue(rhs, {1u}, "b.len");
-                    return llvm::wrap(call_rt("__ferrous_str_concat",
-                        {a_ptr, a_len, b_ptr, b_len}, "concat"));
+                    return call_rt("__ferrous_str_concat",
+                        {a_ptr, a_len, b_ptr, b_len}, "concat");
                 }
-                return llvm::wrap(is_float ? B().CreateFAdd(lhs, rhs, "add")
-                                           : B().CreateAdd(lhs, rhs, "add"));
+                return is_float ? B().CreateFAdd(lhs, rhs, "add")
+                                           : B().CreateAdd(lhs, rhs, "add");
             }
             case TokenKind::OpMinus:
-                return llvm::wrap(is_float ? B().CreateFSub(lhs, rhs, "sub")
-                                           : B().CreateSub(lhs, rhs, "sub"));
+                return is_float ? B().CreateFSub(lhs, rhs, "sub")
+                                           : B().CreateSub(lhs, rhs, "sub");
             case TokenKind::OpStar:
-                return llvm::wrap(is_float ? B().CreateFMul(lhs, rhs, "mul")
-                                           : B().CreateMul(lhs, rhs, "mul"));
+                return is_float ? B().CreateFMul(lhs, rhs, "mul")
+                                           : B().CreateMul(lhs, rhs, "mul");
             case TokenKind::OpSlash: {
-                if (is_float) return llvm::wrap(B().CreateFDiv(lhs, rhs, "div"));
-                llvm::Value* line = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), 0);
-                llvm::Value* checked = call_rt("__ferrous_div_check", {rhs, line}, "div_check");
-                return llvm::wrap(B().CreateSDiv(lhs, checked, "div"));
+                if (is_float) return B().CreateFDiv(lhs, rhs, "div");
+                llvm::Value* line = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), n.line);
+                llvm::Value* d64 = rhs->getType()->getIntegerBitWidth() < 64
+                    ? B().CreateSExt(rhs, llvm::Type::getInt64Ty(C()), "d64") : rhs;
+                call_rt("__ferrous_div_check", {d64, line}, "div_check");
+                return B().CreateSDiv(lhs, rhs, "div");
             }
             case TokenKind::OpPercent: {
-                llvm::Value* line = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), 0);
-                llvm::Value* checked = call_rt("__ferrous_mod_check", {rhs, line}, "mod_check");
-                return llvm::wrap(B().CreateSRem(lhs, checked, "rem"));
+                llvm::Value* line = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), n.line);
+                llvm::Value* d64 = rhs->getType()->getIntegerBitWidth() < 64
+                    ? B().CreateSExt(rhs, llvm::Type::getInt64Ty(C()), "d64") : rhs;
+                call_rt("__ferrous_mod_check", {d64, line}, "mod_check");
+                return B().CreateSRem(lhs, rhs, "rem");
             }
 
             case TokenKind::OpEqEq:
-                return llvm::wrap(is_float ? B().CreateFCmpOEQ(lhs, rhs, "eq")
-                                           : B().CreateICmpEQ(lhs, rhs, "eq"));
+                return is_float ? B().CreateFCmpOEQ(lhs, rhs, "eq")
+                                           : B().CreateICmpEQ(lhs, rhs, "eq");
             case TokenKind::OpBangEq:
-                return llvm::wrap(is_float ? B().CreateFCmpONE(lhs, rhs, "ne")
-                                           : B().CreateICmpNE(lhs, rhs, "ne"));
+                return is_float ? B().CreateFCmpONE(lhs, rhs, "ne")
+                                           : B().CreateICmpNE(lhs, rhs, "ne");
             case TokenKind::OpLt:
-                return llvm::wrap(is_float ? B().CreateFCmpOLT(lhs, rhs, "lt")
-                                           : B().CreateICmpSLT(lhs, rhs, "lt"));
+                return is_float ? B().CreateFCmpOLT(lhs, rhs, "lt")
+                                           : B().CreateICmpSLT(lhs, rhs, "lt");
             case TokenKind::OpLtEq:
-                return llvm::wrap(is_float ? B().CreateFCmpOLE(lhs, rhs, "le")
-                                           : B().CreateICmpSLE(lhs, rhs, "le"));
+                return is_float ? B().CreateFCmpOLE(lhs, rhs, "le")
+                                           : B().CreateICmpSLE(lhs, rhs, "le");
             case TokenKind::OpGt:
-                return llvm::wrap(is_float ? B().CreateFCmpOGT(lhs, rhs, "gt")
-                                           : B().CreateICmpSGT(lhs, rhs, "gt"));
+                return is_float ? B().CreateFCmpOGT(lhs, rhs, "gt")
+                                           : B().CreateICmpSGT(lhs, rhs, "gt");
             case TokenKind::OpGtEq:
-                return llvm::wrap(is_float ? B().CreateFCmpOGE(lhs, rhs, "ge")
-                                           : B().CreateICmpSGE(lhs, rhs, "ge"));
+                return is_float ? B().CreateFCmpOGE(lhs, rhs, "ge")
+                                           : B().CreateICmpSGE(lhs, rhs, "ge");
 
             case TokenKind::OpAndAnd:
-                return llvm::wrap(B().CreateAnd(lhs, rhs, "and"));
+                return B().CreateAnd(lhs, rhs, "and");
             case TokenKind::OpOrOr:
-                return llvm::wrap(B().CreateOr(lhs, rhs, "or"));
+                return B().CreateOr(lhs, rhs, "or");
 
             default:
-                return llvm::wrap(lhs);
+                return lhs;
         }
     }
 
     // скобки: прозрачно возвращает inner
-    LLVMValueRef Codegen::Impl::gen_group(const Parser::GroupExpr& n) {
+    llvm::Value* Codegen::Impl::gen_group(const Parser::GroupExpr& n) {
         return gen_expr(*n.inner);
     }
 
     // приведение типа: SExt/Trunc/SIToFP/FPToSI по таблице
-    LLVMValueRef Codegen::Impl::gen_cast(const Parser::CastExpr& n) {
-        llvm::Value* src = llvm::unwrap(gen_expr(*n.expr));
+    llvm::Value* Codegen::Impl::gen_cast(const Parser::CastExpr& n) {
+        llvm::Value* src = gen_expr(*n.expr);
         Semantic::TypeID dst_tid = resolve_typeid(n.target, *types,
             types->builtin(TokenKind::KwInt32));
-        llvm::Type* dst = llvm::unwrap(to_llvm_type(dst_tid));
+        llvm::Type* dst = to_llvm_type(dst_tid);
         llvm::Type* src_ty = src->getType();
 
         bool src_float = src_ty->isFloatingPointTy();
@@ -729,30 +731,30 @@ namespace Codegen {
 
         // одинаковые типы
         if (src_ty == dst)
-            return llvm::wrap(src);
+            return src;
 
         // float → int
         if (src_float && dst->isIntegerTy())
-            return llvm::wrap(B().CreateFPToSI(src, dst, "cast"));
+            return B().CreateFPToSI(src, dst, "cast");
         // int → float
         if (src_ty->isIntegerTy() && dst_float)
-            return llvm::wrap(B().CreateSIToFP(src, dst, "cast"));
+            return B().CreateSIToFP(src, dst, "cast");
         // float → float (fpext/fptrunc)
         if (src_float && dst_float) {
             if (src_ty->getPrimitiveSizeInBits() < dst->getPrimitiveSizeInBits())
-                return llvm::wrap(B().CreateFPExt(src, dst, "cast"));
-            return llvm::wrap(B().CreateFPTrunc(src, dst, "cast"));
+                return B().CreateFPExt(src, dst, "cast");
+            return B().CreateFPTrunc(src, dst, "cast");
         }
 
         // int → int (sext/trunc)
         if (src_ty->getIntegerBitWidth() < dst->getIntegerBitWidth())
-            return llvm::wrap(B().CreateSExt(src, dst, "cast"));
-        return llvm::wrap(B().CreateTrunc(src, dst, "cast"));
+            return B().CreateSExt(src, dst, "cast");
+        return B().CreateTrunc(src, dst, "cast");
     }
 
 
     // вызов функции: разрешение имени → встроенная или пользовательская
-    LLVMValueRef Codegen::Impl::gen_call(const Parser::CallExpr& n) {
+    llvm::Value* Codegen::Impl::gen_call(const Parser::CallExpr& n) {
         // извлекаем имя функции
         std::string fn_name;
         if (auto* id = std::get_if<Parser::IdentExpr>(&n.call->node))
@@ -763,11 +765,11 @@ namespace Codegen {
                 fn_name += std::string(seg);
             }
         } else {
-            return LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false);
+            return i32_zero();
         }
 
         // аргументы (значения + Ferrous-типы из аннотаций для манглинга)
-        std::vector<LLVMValueRef> args;
+        std::vector<llvm::Value*> args;
         std::vector<Semantic::TypeID> arg_tids;
         for (const auto& arg : n.args) {
             args.push_back(gen_expr(arg));
@@ -781,7 +783,7 @@ namespace Codegen {
             fn_name == "input" || fn_name == "len" ||
             fn_name == "exit" || fn_name == "panic" ||
             fn_name == "assert") {
-            return gen_builtin_call(fn_name, args, 0);
+            return gen_builtin_call(fn_name, args, n.line);
         }
 
         // пользовательская функция — манглинг по Ferrous-типам
@@ -790,12 +792,12 @@ namespace Codegen {
         llvm::Function* callee = nullptr;
         llvm::FunctionType* ft = nullptr;
         if (auto it = functions.find(mangled); it != functions.end()) {
-            callee = llvm::cast<llvm::Function>(llvm::unwrap(it->second));
-            ft = llvm::cast<llvm::FunctionType>(llvm::unwrap(function_types[mangled]));
+            callee = llvm::cast<llvm::Function>(it->second);
+            ft = llvm::cast<llvm::FunctionType>(function_types[mangled]);
         } else if (auto it = functions.find(fn_name); it != functions.end()) {
-            callee = llvm::cast<llvm::Function>(llvm::unwrap(it->second));
+            callee = llvm::cast<llvm::Function>(it->second);
             if (auto tit = function_types.find(fn_name); tit != function_types.end())
-                ft = llvm::cast<llvm::FunctionType>(llvm::unwrap(tit->second));
+                ft = llvm::cast<llvm::FunctionType>(tit->second);
         }
 
         if (!callee || !ft)
@@ -803,19 +805,19 @@ namespace Codegen {
 
         std::vector<llvm::Value*> cargs;
         cargs.reserve(args.size());
-        for (auto a : args) cargs.push_back(llvm::unwrap(a));
-        return llvm::wrap(B().CreateCall(ft, callee, cargs, ""));
+        for (auto a : args) cargs.push_back(a);
+        return B().CreateCall(ft, callee, cargs, "");
     }
 
     // индексация массива: bounds check + GEP + Load (типы из aast)
-    LLVMValueRef Codegen::Impl::gen_index(const Parser::IndexExpr& n) {
-        llvm::Value* idx = llvm::unwrap(gen_expr(*n.index));
-        llvm::Value* ptr = llvm::unwrap(gen_lvalue_ptr(*n.array));
+    llvm::Value* Codegen::Impl::gen_index(const Parser::IndexExpr& n) {
+        llvm::Value* idx = gen_expr(*n.index);
+        llvm::Value* ptr = gen_lvalue_ptr(*n.array);
 
         Semantic::TypeID arr_tid = expr_tid(n.array.get(),
             types->builtin(TokenKind::KwInt32));
         const auto* arr_info = types->get_array(arr_tid);
-        llvm::Type* arr_ty = llvm::unwrap(to_llvm_type(arr_tid));
+        llvm::Type* arr_ty = to_llvm_type(arr_tid);
 
         // bounds check
         if (arr_info) {
@@ -826,10 +828,10 @@ namespace Codegen {
                 promoted = B().CreateSExt(promoted,
                     llvm::Type::getInt64Ty(C()), "idx64");
             auto bc_fn = llvm::cast<llvm::Function>(
-                llvm::unwrap(functions["__ferrous_bounds_check"]));
+                functions["__ferrous_bounds_check"]);
             auto bc_ft = llvm::cast<llvm::FunctionType>(
-                llvm::unwrap(function_types["__ferrous_bounds_check"]));
-            llvm::Value* line = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), 0);
+                function_types["__ferrous_bounds_check"]);
+            llvm::Value* line = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), n.line);
             B().CreateCall(bc_ft, bc_fn, {promoted, len, line});
         }
 
@@ -838,19 +840,19 @@ namespace Codegen {
         };
         llvm::Value* elem_ptr = B().CreateGEP(arr_ty, ptr, gep_idx, "idx");
         llvm::Type* elem_ty = arr_info
-            ? llvm::unwrap(to_llvm_type(arr_info->elem))
+            ? to_llvm_type(arr_info->elem)
             : llvm::Type::getInt32Ty(C());
-        return llvm::wrap(B().CreateLoad(elem_ty, elem_ptr, "elem"));
+        return B().CreateLoad(elem_ty, elem_ptr, "elem");
     }
 
 
     // доступ к полю структуры: индекс и тип поля из TypeRegistry → GEP + Load
-    LLVMValueRef Codegen::Impl::gen_field(const Parser::FieldExpr& n) {
-        llvm::Value* obj_ptr = llvm::unwrap(gen_lvalue_ptr(*n.object));
+    llvm::Value* Codegen::Impl::gen_field(const Parser::FieldExpr& n) {
+        llvm::Value* obj_ptr = gen_lvalue_ptr(*n.object);
 
         Semantic::TypeID obj_tid = expr_tid(n.object.get(),
             types->builtin(TokenKind::KwInt32));
-        llvm::Type* sty = llvm::unwrap(to_llvm_type(obj_tid));
+        llvm::Type* sty = to_llvm_type(obj_tid);
 
         unsigned idx = 0;
         llvm::Type* field_ty = llvm::Type::getInt32Ty(C());
@@ -858,7 +860,7 @@ namespace Codegen {
             for (unsigned i = 0; i < st->fields.size(); ++i) {
                 if (st->fields[i].first == n.field) {
                     idx = i;
-                    field_ty = llvm::unwrap(to_llvm_type(st->fields[i].second));
+                    field_ty = to_llvm_type(st->fields[i].second);
                     break;
                 }
             }
@@ -869,27 +871,27 @@ namespace Codegen {
             llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), idx)
         };
         llvm::Value* field_ptr = B().CreateGEP(sty, obj_ptr, gep_idx, "field");
-        return llvm::wrap(B().CreateLoad(field_ty, field_ptr, std::string(n.field)));
+        return B().CreateLoad(field_ty, field_ptr, std::string(n.field));
     }
 
     // литерал массива: insertvalue каждого элемента в undef
-    LLVMValueRef Codegen::Impl::gen_array_lit(const Parser::ArrayLitExpr& n,
+    llvm::Value* Codegen::Impl::gen_array_lit(const Parser::ArrayLitExpr& n,
                                               const Parser::Expr& e) {
         Semantic::TypeID tid = expr_tid(&e, types->builtin(TokenKind::KwInt32));
-        llvm::Type* aty = llvm::unwrap(to_llvm_type(tid));
+        llvm::Type* aty = to_llvm_type(tid);
 
         llvm::Value* arr = llvm::UndefValue::get(aty);
         for (std::size_t i = 0; i < n.elems.size(); ++i) {
-            llvm::Value* elem = llvm::unwrap(gen_expr(n.elems[i]));
+            llvm::Value* elem = gen_expr(n.elems[i]);
             arr = B().CreateInsertValue(arr, elem,
                 {static_cast<unsigned>(i)}, "arr");
         }
-        return llvm::wrap(arr);
+        return arr;
     }
 
 
     // литерал структуры: insertvalue каждого поля (индекс из TypeRegistry)
-    LLVMValueRef Codegen::Impl::gen_struct_lit(const Parser::StructLitExpr& n) {
+    llvm::Value* Codegen::Impl::gen_struct_lit(const Parser::StructLitExpr& n) {
         std::string name(n.name);
         llvm::StructType* sty = llvm::StructType::getTypeByName(C(), name);
         if (!sty) return i32_zero();
@@ -912,17 +914,17 @@ namespace Codegen {
                     }
                 }
             }
-            llvm::Value* val = llvm::unwrap(gen_expr(*fexpr));
+            llvm::Value* val = gen_expr(*fexpr);
             s = B().CreateInsertValue(s, val, {idx}, "");
         }
-        return llvm::wrap(s);
+        return s;
     }
 
 
 
     // получение указателя для присваивания: IdentExpr → alloca, Field/Index → GEP
-    LLVMValueRef Codegen::Impl::gen_lvalue_ptr(const Parser::Expr& e) {
-        return std::visit([&](const auto& n) -> LLVMValueRef {
+    llvm::Value* Codegen::Impl::gen_lvalue_ptr(const Parser::Expr& e) {
+        return std::visit([&](const auto& n) -> llvm::Value* {
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Parser::IdentExpr>) {
                 std::string name(n.value);
@@ -933,10 +935,10 @@ namespace Codegen {
                 return nullptr;
             }
             else if constexpr (std::is_same_v<T, Parser::FieldExpr>) {
-                llvm::Value* obj_ptr = llvm::unwrap(gen_lvalue_ptr(*n.object));
+                llvm::Value* obj_ptr = gen_lvalue_ptr(*n.object);
                 Semantic::TypeID obj_tid = expr_tid(n.object.get(),
                     types->builtin(TokenKind::KwInt32));
-                llvm::Type* sty = llvm::unwrap(to_llvm_type(obj_tid));
+                llvm::Type* sty = to_llvm_type(obj_tid);
 
                 unsigned fidx = 0;
                 if (const auto* st = types->get_struct(obj_tid)) {
@@ -952,18 +954,18 @@ namespace Codegen {
                     llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), 0),
                     llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), fidx)
                 };
-                return llvm::wrap(B().CreateGEP(sty, obj_ptr, gep, "fld"));
+                return B().CreateGEP(sty, obj_ptr, gep, "fld");
             }
             else if constexpr (std::is_same_v<T, Parser::IndexExpr>) {
-                llvm::Value* arr_ptr = llvm::unwrap(gen_lvalue_ptr(*n.array));
-                llvm::Value* idx = llvm::unwrap(gen_expr(*n.index));
+                llvm::Value* arr_ptr = gen_lvalue_ptr(*n.array);
+                llvm::Value* idx = gen_expr(*n.index);
                 Semantic::TypeID arr_tid = expr_tid(n.array.get(),
                     types->builtin(TokenKind::KwInt32));
-                llvm::Type* aty = llvm::unwrap(to_llvm_type(arr_tid));
+                llvm::Type* aty = to_llvm_type(arr_tid);
                 llvm::Value* gep[] = {
                     llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), 0), idx
                 };
-                return llvm::wrap(B().CreateGEP(aty, arr_ptr, gep, "idx"));
+                return B().CreateGEP(aty, arr_ptr, gep, "idx");
             }
             else {
                 return nullptr;
@@ -991,12 +993,12 @@ namespace Codegen {
 
     // объявление переменной: alloca + store init, запись в CGScope
     void Codegen::Impl::gen_let(const Parser::LetStmt& n) {
-        LLVMValueRef init = gen_expr(*n.expr_init);
-        LLVMTypeRef ty = LLVMTypeOf(init);
+        llvm::Value* init = gen_expr(*n.expr_init);
+        llvm::Type* ty = init->getType();
 
-        LLVMValueRef alloca = create_entry_alloca(cg_fn,
+        llvm::Value* alloca = create_entry_alloca(cg_fn,
             std::string(n.name), ty);
-        LLVMBuildStore(builder, init, alloca);
+        B().CreateStore(init, alloca);
         cg_current_scope->vars[std::string(n.name)] = alloca;
         cg_current_scope->var_types[std::string(n.name)] = ty;
     }
@@ -1017,73 +1019,67 @@ namespace Codegen {
 
     // условный оператор: cond_br с then/else/merge базовыми блоками
     void Codegen::Impl::gen_if(const Parser::IfStmt& n) {
-        LLVMValueRef cond = gen_expr(*n.condition);
-        if (LLVMGetTypeKind(LLVMTypeOf(cond)) != LLVMIntegerTypeKind ||
-            LLVMGetIntTypeWidth(LLVMTypeOf(cond)) != 1) {
-            cond = LLVMBuildICmp(builder, LLVMIntNE, cond,
-                LLVMConstInt(LLVMTypeOf(cond), 0, false), "tobool");
-        }
+        llvm::Value* cond = gen_expr(*n.condition);
+        if (!cond->getType()->isIntegerTy(1))
+            cond = B().CreateICmpNE(cond,
+                llvm::ConstantInt::get(cond->getType(), 0), "tobool");
 
-        LLVMBasicBlockRef then_bb = LLVMAppendBasicBlockInContext(ctx, cg_fn, "then");
-        LLVMBasicBlockRef else_bb = n.else_body
-            ? LLVMAppendBasicBlockInContext(ctx, cg_fn, "else") : nullptr;
-        LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(ctx, cg_fn, "if.end");
+        llvm::Function* fn = llvm::cast<llvm::Function>(cg_fn);
+        llvm::BasicBlock* then_bb  = llvm::BasicBlock::Create(C(), "then", fn);
+        llvm::BasicBlock* else_bb  = n.else_body
+            ? llvm::BasicBlock::Create(C(), "else", fn) : nullptr;
+        llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(C(), "if.end", fn);
 
-        LLVMBuildCondBr(builder, cond, then_bb,
-            else_bb ? else_bb : merge_bb);
+        B().CreateCondBr(cond, then_bb, else_bb ? else_bb : merge_bb);
 
         // then
-        LLVMPositionBuilderAtEnd(builder, then_bb);
+        B().SetInsertPoint(then_bb);
         gen_stmt(*n.then_body);
-        if (!LLVMGetBasicBlockTerminator(then_bb))
-            LLVMBuildBr(builder, merge_bb);
+        if (!then_bb->getTerminator()) B().CreateBr(merge_bb);
 
         // else
         if (else_bb) {
-            LLVMPositionBuilderAtEnd(builder, else_bb);
+            B().SetInsertPoint(else_bb);
             gen_stmt(*n.else_body);
-            if (!LLVMGetBasicBlockTerminator(else_bb))
-                LLVMBuildBr(builder, merge_bb);
+            if (!else_bb->getTerminator()) B().CreateBr(merge_bb);
         }
 
-        LLVMPositionBuilderAtEnd(builder, merge_bb);
+        B().SetInsertPoint(merge_bb);
     }
 
 
 
     // цикл: cond_bb → body_bb → exit_bb, стек break/continue
     void Codegen::Impl::gen_while(const Parser::WhileStmt& n) {
-        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(ctx, cg_fn, "while.cond");
-        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(ctx, cg_fn, "while.body");
-        LLVMBasicBlockRef exit_bb = LLVMAppendBasicBlockInContext(ctx, cg_fn, "while.end");
+        llvm::Function* fn = llvm::cast<llvm::Function>(cg_fn);
+        llvm::BasicBlock* cond_bb = llvm::BasicBlock::Create(C(), "while.cond", fn);
+        llvm::BasicBlock* body_bb = llvm::BasicBlock::Create(C(), "while.body", fn);
+        llvm::BasicBlock* exit_bb = llvm::BasicBlock::Create(C(), "while.end", fn);
 
-        // сохраняем старые точки для break/continue
+        // сохраняем точки для break/continue (мосты в C-типизированном стеке)
         break_stack.push_back(exit_bb);
         continue_stack.push_back(cond_bb);
 
-        LLVMBuildBr(builder, cond_bb);
+        B().CreateBr(cond_bb);
 
         // cond
-        LLVMPositionBuilderAtEnd(builder, cond_bb);
-        LLVMValueRef cond = gen_expr(*n.condition);
-        if (LLVMGetTypeKind(LLVMTypeOf(cond)) != LLVMIntegerTypeKind ||
-            LLVMGetIntTypeWidth(LLVMTypeOf(cond)) != 1) {
-            cond = LLVMBuildICmp(builder, LLVMIntNE, cond,
-                LLVMConstInt(LLVMTypeOf(cond), 0, false), "tobool");
-        }
-        LLVMBuildCondBr(builder, cond, body_bb, exit_bb);
+        B().SetInsertPoint(cond_bb);
+        llvm::Value* cond = gen_expr(*n.condition);
+        if (!cond->getType()->isIntegerTy(1))
+            cond = B().CreateICmpNE(cond,
+                llvm::ConstantInt::get(cond->getType(), 0), "tobool");
+        B().CreateCondBr(cond, body_bb, exit_bb);
 
         // body
-        LLVMPositionBuilderAtEnd(builder, body_bb);
+        B().SetInsertPoint(body_bb);
         bool old_loop = cg_in_loop;
         cg_in_loop = true;
         gen_stmt(*n.body);
         cg_in_loop = old_loop;
-        if (!LLVMGetBasicBlockTerminator(body_bb))
-            LLVMBuildBr(builder, cond_bb);
+        if (!body_bb->getTerminator()) B().CreateBr(cond_bb);
 
         // exit
-        LLVMPositionBuilderAtEnd(builder, exit_bb);
+        B().SetInsertPoint(exit_bb);
         break_stack.pop_back();
         continue_stack.pop_back();
     }
@@ -1092,152 +1088,133 @@ namespace Codegen {
 
     // возврат из функции: ret val / ret void
     void Codegen::Impl::gen_return(const Parser::ReturnStmt& n) {
-        if (n.value) {
-            LLVMValueRef val = gen_expr(*n.value);
-            LLVMBuildRet(builder, val);
-        } else {
-            LLVMBuildRetVoid(builder);
-        }
+        if (n.value)
+            B().CreateRet(gen_expr(*n.value));
+        else
+            B().CreateRetVoid();
     }
 
 
 
     void Codegen::Impl::gen_break() {
-        LLVMBuildBr(builder, break_stack.back());
+        B().CreateBr(break_stack.back());
     }
 
     void Codegen::Impl::gen_continue() {
-        LLVMBuildBr(builder, continue_stack.back());
+        B().CreateBr(continue_stack.back());
     }
 
 
 
     // встроенные: print/println (диспетчер по типу), input, len, exit, panic, assert
-    LLVMValueRef Codegen::Impl::gen_builtin_call(const std::string& name,
-                                           const std::vector<LLVMValueRef>& args,
+    llvm::Value* Codegen::Impl::gen_builtin_call(const std::string& name,
+                                           const std::vector<llvm::Value*>& args,
                                            std::size_t line) {
-        (void)line;
+        // распаковка аргументов в C++-значения
+        std::vector<llvm::Value*> av;
+        av.reserve(args.size());
+        for (auto a : args) av.push_back(a);
+
+        auto call_rt = [&](const char* fname, std::vector<llvm::Value*> a,
+                           const char* lbl = "") -> llvm::Value* {
+            auto fn = llvm::cast<llvm::Function>(functions[fname]);
+            auto ft = llvm::cast<llvm::FunctionType>(function_types[fname]);
+            return B().CreateCall(ft, fn, a, lbl);
+        };
+        llvm::Value* line_val = llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(C()), line);
 
         if (name == "print" || name == "println") {
             bool ln = (name == "println");
-            if (args.empty()) return nullptr;
-
-            LLVMValueRef val = args[0];
-            LLVMTypeRef ty = LLVMTypeOf(val);
-            LLVMTypeKind tk = LLVMGetTypeKind(ty);
+            if (av.empty()) return nullptr;
+            llvm::Value* val = av[0];
+            llvm::Type* ty = val->getType();
 
             // string
-            if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
-                LLVMValueRef ptr = LLVMBuildExtractValue(builder, val, 0, "");
-                LLVMValueRef len = LLVMBuildExtractValue(builder, val, 1, "");
-                const char* fname = ln
-                    ? "__ferrous_println_string"
-                    : "__ferrous_print_string";
-                LLVMValueRef fn = functions[fname];
-                LLVMTypeRef ft = function_types[fname];
-                LLVMValueRef a[] = {ptr, len};
-                return LLVMBuildCall2(builder, ft, fn, a, 2, "");
+            if (ty->isStructTy()) {
+                llvm::Value* ptr = B().CreateExtractValue(val, {0u});
+                llvm::Value* len = B().CreateExtractValue(val, {1u});
+                return call_rt(ln ? "__ferrous_println_string"
+                                             : "__ferrous_print_string", {ptr, len});
             }
-
             // float
-            if (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind) {
-                if (tk == LLVMFloatTypeKind)
-                    val = LLVMBuildFPExt(builder, val,
-                        LLVMDoubleTypeInContext(ctx), "promote");
-                const char* fname = ln
-                    ? "__ferrous_println_float64"
-                    : "__ferrous_print_float64";
-                LLVMValueRef fn = functions[fname];
-                LLVMTypeRef ft = function_types[fname];
-                return LLVMBuildCall2(builder, ft, fn, &val, 1, "");
+            if (ty->isFloatingPointTy()) {
+                if (ty->isFloatTy())
+                    val = B().CreateFPExt(val, llvm::Type::getDoubleTy(C()), "promote");
+                return call_rt(ln ? "__ferrous_println_float64"
+                                             : "__ferrous_print_float64", {val});
             }
-
             // int
-            if (LLVMGetIntTypeWidth(ty) < 64)
-                val = LLVMBuildSExt(builder, val,
-                    LLVMInt64TypeInContext(ctx), "promote");
-            const char* fname_i = ln
-                ? "__ferrous_println_int64"
-                : "__ferrous_print_int64";
-            LLVMValueRef fn = functions[fname_i];
-            LLVMTypeRef ft = function_types[fname_i];
-            return LLVMBuildCall2(builder, ft, fn, &val, 1, "");
+            if (val->getType()->getIntegerBitWidth() < 64)
+                val = B().CreateSExt(val, llvm::Type::getInt64Ty(C()), "promote");
+            return call_rt(ln ? "__ferrous_println_int64"
+                                         : "__ferrous_print_int64", {val});
         }
 
-        if (name == "input") {
-            LLVMValueRef fn = functions["__ferrous_input"];
-            LLVMTypeRef ft = function_types["__ferrous_input"];
-            return LLVMBuildCall2(builder, ft, fn, nullptr, 0, "");
-        }
+        if (name == "input")
+            return call_rt("__ferrous_input", {});
 
         if (name == "len") {
-            LLVMValueRef str = args[0];
-            LLVMValueRef len = LLVMBuildExtractValue(builder, str, 1, "len");
-            return LLVMBuildTrunc(builder, len,
-                LLVMInt32TypeInContext(ctx), "len32");
+            llvm::Value* len = B().CreateExtractValue(av[0], {1u}, "len");
+            return B().CreateTrunc(len,
+                llvm::Type::getInt32Ty(C()), "len32");
         }
 
         if (name == "exit") {
-            if (args.empty()) return nullptr;
-            LLVMValueRef promoted = args[0];
-            if (LLVMGetIntTypeWidth(LLVMTypeOf(promoted)) < 64)
-                promoted = LLVMBuildSExt(builder, promoted,
-                    LLVMInt64TypeInContext(ctx), "code");
-            LLVMBuildRet(builder, promoted);
+            if (av.empty()) return nullptr;
+            llvm::Value* promoted = av[0];
+            if (promoted->getType()->getIntegerBitWidth() < 64)
+                promoted = B().CreateSExt(promoted, llvm::Type::getInt64Ty(C()), "code");
+            B().CreateRet(promoted);
             return promoted;
         }
 
         if (name == "panic") {
-            LLVMValueRef str_val = args[0];
-            LLVMValueRef ptr = LLVMBuildExtractValue(builder, str_val, 0, "");
-            LLVMValueRef len = LLVMBuildExtractValue(builder, str_val, 1, "");
-            LLVMValueRef line_val = LLVMConstInt(
-                LLVMInt64TypeInContext(ctx), 0, false);
-            LLVMValueRef fn = functions["__ferrous_panic"];
-            LLVMTypeRef ft = function_types["__ferrous_panic"];
-            LLVMValueRef a[] = {ptr, len, line_val};
-            return LLVMBuildCall2(builder, ft, fn, a, 3, "");
+            llvm::Value* ptr = B().CreateExtractValue(av[0], {0u});
+            llvm::Value* len = B().CreateExtractValue(av[0], {1u});
+            return call_rt("__ferrous_panic", {ptr, len, line_val});
         }
 
         if (name == "assert") {
-            LLVMValueRef cond = args[0];
-            if (LLVMGetTypeKind(LLVMTypeOf(cond)) != LLVMIntegerTypeKind ||
-                LLVMGetIntTypeWidth(LLVMTypeOf(cond)) != 1)
-                cond = LLVMBuildICmp(builder, LLVMIntNE, cond,
-                    LLVMConstInt(LLVMTypeOf(cond), 0, false), "tobool");
+            llvm::Value* cond = av[0];
+            if (!cond->getType()->isIntegerTy(1))
+                cond = B().CreateICmpNE(cond,
+                    llvm::ConstantInt::get(cond->getType(), 0), "tobool");
 
-            LLVMBasicBlockRef ok_bb = LLVMAppendBasicBlockInContext(ctx, cg_fn, "assert.ok");
-            LLVMBasicBlockRef fail_bb = LLVMAppendBasicBlockInContext(ctx, cg_fn, "assert.fail");
-            LLVMBuildCondBr(builder, cond, ok_bb, fail_bb);
+            llvm::Function* fn = llvm::cast<llvm::Function>(cg_fn);
+            llvm::BasicBlock* ok_bb   = llvm::BasicBlock::Create(C(), "assert.ok", fn);
+            llvm::BasicBlock* fail_bb = llvm::BasicBlock::Create(C(), "assert.fail", fn);
+            B().CreateCondBr(cond, ok_bb, fail_bb);
 
-            LLVMPositionBuilderAtEnd(builder, fail_bb);
-            const char* msg = "assertion failed";
-            LLVMValueRef msg_global = LLVMBuildGlobalStringPtr(builder,
-                msg, "assert_msg");
-            LLVMValueRef msg_len = LLVMConstInt(
-                LLVMInt64TypeInContext(ctx), strlen(msg), false);
-            LLVMValueRef line_val = LLVMConstInt(
-                LLVMInt64TypeInContext(ctx), 0, false);
-            LLVMValueRef fn = functions["__ferrous_assert_fail"];
-            LLVMTypeRef ft = function_types["__ferrous_assert_fail"];
-            LLVMValueRef a[] = {msg_global, msg_len, line_val};
-            LLVMBuildCall2(builder, ft, fn, a, 3, "");
-            LLVMBuildUnreachable(builder);
+            B().SetInsertPoint(fail_bb);
+            llvm::Value* msg_ptr;
+            llvm::Value* msg_len;
+            if (av.size() >= 2) {
+                // assert(cond, msg) — сообщение пользователя
+                msg_ptr = B().CreateExtractValue(av[1], {0u});
+                msg_len = B().CreateExtractValue(av[1], {1u});
+            } else {
+                const char* msg = "assertion failed";
+                msg_ptr = B().CreateGlobalString(msg, "assert_msg");
+                msg_len = llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(C()), std::strlen(msg));
+            }
+            call_rt("__ferrous_assert_fail", {msg_ptr, msg_len, line_val});
+            B().CreateUnreachable();
 
-            LLVMPositionBuilderAtEnd(builder, ok_bb);
-            return LLVMConstInt(LLVMInt1TypeInContext(ctx), 1, false);
+            B().SetInsertPoint(ok_bb);
+            return llvm::ConstantInt::get(llvm::Type::getInt1Ty(C()), 1);
         }
 
-        return LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false);
+        return i32_zero();
     }
-
-    // ── define_function ────────────────────────────────────────────────
+    
 
     // генерация тела функции: параметры → allocas, обход тела
     void Codegen::Impl::define_function(const Parser::FnDecl& fn,
                                         const std::string& prefix) {
         std::string name = prefix + std::string(fn.name);
-        LLVMValueRef llvm_fn = nullptr;
+        llvm::Value* llvm_fn = nullptr;
         if (name == "main") {
             auto m_it = functions.find("main");
             if (m_it != functions.end()) llvm_fn = m_it->second;
@@ -1258,8 +1235,9 @@ namespace Codegen {
         if (!cg_fn) return;
 
         // entry-блок
-        LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ctx, cg_fn, "entry");
-        LLVMPositionBuilderAtEnd(builder, entry);
+        llvm::Function* fn_v = llvm::cast<llvm::Function>(cg_fn);
+        llvm::BasicBlock* entry = llvm::BasicBlock::Create(C(), "entry", fn_v);
+        B().SetInsertPoint(entry);
 
         // возвращаемый тип
         cg_return_type = fn.return_type
@@ -1271,12 +1249,12 @@ namespace Codegen {
 
         for (unsigned i = 0; i < fn.params.size(); ++i) {
             const auto& [pname, ptype] = fn.params[i];
-            LLVMValueRef param = LLVMGetParam(cg_fn, i);
-            LLVMValueRef alloca = create_entry_alloca(cg_fn,
-                std::string(pname), LLVMTypeOf(param));
-            LLVMBuildStore(builder, param, alloca);
+            llvm::Argument* param = fn_v->getArg(i);
+            llvm::Value* alloca = create_entry_alloca(cg_fn,
+                std::string(pname), param->getType());
+            B().CreateStore(param, alloca);
             cg_current_scope->vars[std::string(pname)] = alloca;
-            cg_current_scope->var_types[std::string(pname)] = LLVMTypeOf(param);
+            cg_current_scope->var_types[std::string(pname)] = param->getType();
         }
 
         // скоуп тела
@@ -1287,9 +1265,9 @@ namespace Codegen {
             gen_stmt(s);
 
         // если void и нет return — вставляем ret void
-        if (!LLVMGetBasicBlockTerminator(LLVMGetLastBasicBlock(cg_fn)) &&
+        if (!fn_v->back().getTerminator() &&
             types->equal(cg_return_type, types->void_type())) {
-            LLVMBuildRetVoid(builder);
+            B().CreateRetVoid();
         }
 
         pop_cg_scope();
@@ -1322,48 +1300,47 @@ namespace Codegen {
         this->aast = &aast;
         this->types = aast.types;
 
-        ctx = LLVMContextCreate();
-        mod = LLVMModuleCreateWithNameInContext("ferrous_module", ctx);
-        builder = LLVMCreateBuilderInContext(ctx);
+        ctx = new llvm::LLVMContext();
+        mod = new llvm::Module("ferrous_module", *ctx);
+        builder = new llvm::IRBuilder<>(*ctx);
 
-        // инициализация x86-таргета
-        LLVMInitializeX86TargetInfo();
-        LLVMInitializeX86Target();
-        LLVMInitializeX86TargetMC();
-        LLVMInitializeX86AsmPrinter();
-        LLVMInitializeX86AsmParser();
+        // инициализация нативного таргета
+        llvm::InitializeNativeTarget();
+        llvm::InitializeNativeTargetAsmPrinter();
+        llvm::InitializeNativeTargetAsmParser();
 
         declare_runtime_functions();
         declare_structs(decls);
         declare_functions(decls);
         define_functions(decls);
 
-        // верификация
-        char* vfy_msg = nullptr;
-        LLVMBool vfy_failed = LLVMVerifyModule(mod, LLVMReturnStatusAction, &vfy_msg);
-        if (vfy_failed) {
-            std::cerr << "LLVM verification error: " << (vfy_msg ? vfy_msg : "") << '\n';
-            LLVMDisposeMessage(vfy_msg);
+        // верификация — при ошибке прерываем (не пишем .ll, не линкуем)
+        std::string vfy_err;
+        llvm::raw_string_ostream vfy_os(vfy_err);
+        if (llvm::verifyModule(M(), &vfy_os)) {
+            std::cerr << "LLVM verification error:\n" << vfy_err << '\n';
+            return;
         }
 
         // запись .ll
         std::string ll_path = output_path + ".ll";
-        char* print_msg = nullptr;
-        LLVMPrintModuleToFile(mod, ll_path.c_str(), &print_msg);
-        if (print_msg) {
-            std::cerr << "cannot write " << ll_path << ": " << print_msg << '\n';
-            LLVMDisposeMessage(print_msg);
+        std::error_code ec;
+        llvm::raw_fd_ostream ll_out(ll_path, ec);
+        if (ec) {
+            std::cerr << "cannot write " << ll_path << ": " << ec.message() << '\n';
             return;
         }
+        M().print(ll_out, nullptr);
+        ll_out.flush();
 
         // компиляция рантайма + линковка исполняемого файла
         std::string rt_o = output_path + ".rt.o";
-        std::string cmd_rt = "clang++ -stdlib=libc++ -std=c++23 -c rt/ferrous_rt.cpp -o " + rt_o;
+        std::string cmd_rt = "clang++ -std=c++23 -c rt/ferrous_rt.cpp -o " + rt_o;
         int ret_rt = std::system(cmd_rt.c_str());
         if (ret_rt != 0)
             std::cerr << "runtime compilation failed (exit " << ret_rt << ")\n";
 
-        std::string cmd = "clang++ -stdlib=libc++ -O1 " + ll_path + " " + rt_o + " -o " + output_path;
+        std::string cmd = "clang++ -O1 " + ll_path + " " + rt_o + " -o " + output_path;
         int ret = std::system(cmd.c_str());
         if (ret != 0)
             std::cerr << "linking failed (exit code " << ret << "): " << cmd << "\n";

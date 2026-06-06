@@ -78,6 +78,7 @@ export namespace Parser {
     struct BinaryExpr {
         std::unique_ptr<Expr> lhs, rhs;
         Lexer::TokenKind op;
+        std::size_t line = 0;   // строка оператора (для runtime-ошибок div/mod)
     };
 
     struct GroupExpr {     // (1 + 2)
@@ -92,12 +93,14 @@ export namespace Parser {
     struct CallExpr { // f(1, 2)
         std::unique_ptr<Expr> call;
         std::vector<Expr> args;
+        std::size_t line = 0;   // строка вызова (для panic/assert)
     };
 
 
     struct IndexExpr {  // arr[2]
         std::unique_ptr<Expr> array;
         std::unique_ptr<Expr> index;
+        std::size_t line = 0;   // строка индексации (для bounds-check)
     };
 
     struct FieldExpr {  // struct.struct_obj
