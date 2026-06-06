@@ -54,6 +54,12 @@ namespace Codegen {
         LLVMValueRef i32_zero() const {
             return llvm::wrap(llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), 0));
         }
+        // тип Ferrous-выражения из аннотаций (opaque-pointer-safe источник типов)
+        Semantic::TypeID expr_tid(const Parser::Expr* e, Semantic::TypeID fb) const {
+            auto it = aast->expr_type.find(e);
+            return it != aast->expr_type.end()
+                ? types->resolve_alias(it->second) : fb;
+        }
 
         // аннотации от семантики
         const Semantic::AnnotatedAST* aast = nullptr;
@@ -129,7 +135,7 @@ namespace Codegen {
         LLVMValueRef gen_call(const Parser::CallExpr& n);
         LLVMValueRef gen_index(const Parser::IndexExpr& n);
         LLVMValueRef gen_field(const Parser::FieldExpr& n);
-        LLVMValueRef gen_array_lit(const Parser::ArrayLitExpr& n);
+        LLVMValueRef gen_array_lit(const Parser::ArrayLitExpr& n, const Parser::Expr& e);
         LLVMValueRef gen_struct_lit(const Parser::StructLitExpr& n);
 
         // указатель на lvalue (для присваивания)
@@ -233,6 +239,12 @@ namespace Codegen {
         if (types->equal(tid, types->builtin(TokenKind::KwFloat32)))
             return llvm::wrap(llvm::Type::getFloatTy(c));
         if (types->equal(tid, types->builtin(TokenKind::KwFloat64)))
+            return llvm::wrap(llvm::Type::getDoubleTy(c));
+
+        // untyped-литералы без контекста → дефолтные типы (защита от краша)
+        if (types->is_untyped_int(tid))
+            return llvm::wrap(llvm::Type::getInt32Ty(c));
+        if (types->is_untyped_float(tid))
             return llvm::wrap(llvm::Type::getDoubleTy(c));
 
         // массив
@@ -339,7 +351,7 @@ namespace Codegen {
             if (auto* st = std::get_if<Parser::StructDecl>(&d.node)) {
                 std::string name(st->name);
                 llvm::StructType* sty = llvm::StructType::getTypeByName(C(), name);
-                if (!sty) continue;
+                if (!sty) sty = llvm::StructType::create(C(), name);
 
                 std::vector<llvm::Type*> field_types;
                 for (const auto& [fname, ftype] : st->field) {
@@ -453,7 +465,7 @@ namespace Codegen {
             if constexpr (std::is_same_v<T, Parser::FieldExpr>)
                 return gen_field(n);
             if constexpr (std::is_same_v<T, Parser::ArrayLitExpr>)
-                return gen_array_lit(n);
+                return gen_array_lit(n, e);
             if constexpr (std::is_same_v<T, Parser::StructLitExpr>)
                 return gen_struct_lit(n);
             return i32_zero();
@@ -495,6 +507,7 @@ namespace Codegen {
         tid = types->resolve_alias(tid);
 
         llvm::Type* lt = llvm::unwrap(to_llvm_type(tid));
+        if (!lt->isIntegerTy()) lt = llvm::Type::getInt32Ty(C());
         return llvm::wrap(llvm::ConstantInt::get(lt, val, false));
     }
 
@@ -521,6 +534,7 @@ namespace Codegen {
         tid = types->resolve_alias(tid);
 
         llvm::Type* lt = llvm::unwrap(to_llvm_type(tid));
+        if (!lt->isFloatingPointTy()) lt = llvm::Type::getDoubleTy(C());
         return llvm::wrap(llvm::ConstantFP::get(lt, val));
     }
 
@@ -793,103 +807,94 @@ namespace Codegen {
         return llvm::wrap(B().CreateCall(ft, callee, cargs, ""));
     }
 
-    // индексация массива: bounds check + GEP + Load
+    // индексация массива: bounds check + GEP + Load (типы из aast)
     LLVMValueRef Codegen::Impl::gen_index(const Parser::IndexExpr& n) {
-        LLVMValueRef idx = gen_expr(*n.index);
-        LLVMValueRef ptr = gen_lvalue_ptr(*n.array);
+        llvm::Value* idx = llvm::unwrap(gen_expr(*n.index));
+        llvm::Value* ptr = llvm::unwrap(gen_lvalue_ptr(*n.array));
+
+        Semantic::TypeID arr_tid = expr_tid(n.array.get(),
+            types->builtin(TokenKind::KwInt32));
+        const auto* arr_info = types->get_array(arr_tid);
+        llvm::Type* arr_ty = llvm::unwrap(to_llvm_type(arr_tid));
 
         // bounds check
-        LLVMTypeRef arr_ty = LLVMGetAllocatedType(ptr)
-            ? LLVMGetAllocatedType(ptr) : LLVMTypeOf(ptr);
-        if (LLVMGetTypeKind(arr_ty) == LLVMArrayTypeKind) {
-            LLVMValueRef len = LLVMConstInt(LLVMInt64TypeInContext(ctx),
-                LLVMGetArrayLength(arr_ty), false);
-            LLVMValueRef promoted_idx = idx;
-            if (LLVMGetIntTypeWidth(LLVMTypeOf(promoted_idx)) < 64)
-                promoted_idx = LLVMBuildSExt(builder, promoted_idx,
-                    LLVMInt64TypeInContext(ctx), "idx64");
-            LLVMValueRef bc_fn = functions["__ferrous_bounds_check"];
-            LLVMTypeRef bc_ft = function_types["__ferrous_bounds_check"];
-            LLVMValueRef line = LLVMConstInt(LLVMInt64TypeInContext(ctx), 0, false);
-            LLVMValueRef bc_args[] = {promoted_idx, len, line};
-            LLVMBuildCall2(builder, bc_ft, bc_fn, bc_args, 3, "");
+        if (arr_info) {
+            llvm::Value* len = llvm::ConstantInt::get(
+                llvm::Type::getInt64Ty(C()), arr_info->size);
+            llvm::Value* promoted = idx;
+            if (promoted->getType()->getIntegerBitWidth() < 64)
+                promoted = B().CreateSExt(promoted,
+                    llvm::Type::getInt64Ty(C()), "idx64");
+            auto bc_fn = llvm::cast<llvm::Function>(
+                llvm::unwrap(functions["__ferrous_bounds_check"]));
+            auto bc_ft = llvm::cast<llvm::FunctionType>(
+                llvm::unwrap(function_types["__ferrous_bounds_check"]));
+            llvm::Value* line = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), 0);
+            B().CreateCall(bc_ft, bc_fn, {promoted, len, line});
         }
 
-        LLVMValueRef gep_indices[] = {
-            LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false), idx
+        llvm::Value* gep_idx[] = {
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), 0), idx
         };
-        LLVMValueRef elem_ptr = LLVMBuildGEP2(builder,
-            LLVMGetAllocatedType(ptr) ? LLVMGetAllocatedType(ptr)
-                : LLVMTypeOf(ptr),
-            ptr, gep_indices, 2, "idx");
-        return LLVMBuildLoad2(builder,
-            LLVMGetAllocatedType(ptr)
-                ? LLVMGetElementType(LLVMGetAllocatedType(ptr))
-                : LLVMInt32TypeInContext(ctx),
-            elem_ptr, "elem");
+        llvm::Value* elem_ptr = B().CreateGEP(arr_ty, ptr, gep_idx, "idx");
+        llvm::Type* elem_ty = arr_info
+            ? llvm::unwrap(to_llvm_type(arr_info->elem))
+            : llvm::Type::getInt32Ty(C());
+        return llvm::wrap(B().CreateLoad(elem_ty, elem_ptr, "elem"));
     }
 
 
-    // доступ к полю структуры: индекс поля из TypeRegistry → GEP + Load
+    // доступ к полю структуры: индекс и тип поля из TypeRegistry → GEP + Load
     LLVMValueRef Codegen::Impl::gen_field(const Parser::FieldExpr& n) {
-        LLVMValueRef obj_ptr = gen_lvalue_ptr(*n.object);
-        LLVMTypeRef sty = LLVMGetAllocatedType(obj_ptr);
-        if (!sty) sty = LLVMTypeOf(obj_ptr);
+        llvm::Value* obj_ptr = llvm::unwrap(gen_lvalue_ptr(*n.object));
+
+        Semantic::TypeID obj_tid = expr_tid(n.object.get(),
+            types->builtin(TokenKind::KwInt32));
+        llvm::Type* sty = llvm::unwrap(to_llvm_type(obj_tid));
 
         unsigned idx = 0;
-        // получаем тип объекта из аннотаций и ищем индекс поля
-        auto it = aast->expr_type.find(n.object.get());
-        if (it != aast->expr_type.end()) {
-            Semantic::TypeID obj_tid = types->resolve_alias(it->second);
-            if (const auto* st = types->get_struct(obj_tid)) {
-                for (unsigned i = 0; i < st->fields.size(); ++i) {
-                    if (st->fields[i].first == n.field) {
-                        idx = i;
-                        break;
-                    }
+        llvm::Type* field_ty = llvm::Type::getInt32Ty(C());
+        if (const auto* st = types->get_struct(obj_tid)) {
+            for (unsigned i = 0; i < st->fields.size(); ++i) {
+                if (st->fields[i].first == n.field) {
+                    idx = i;
+                    field_ty = llvm::unwrap(to_llvm_type(st->fields[i].second));
+                    break;
                 }
             }
         }
 
-        LLVMValueRef gep_indices[] = {
-            LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false),
-            LLVMConstInt(LLVMInt32TypeInContext(ctx), idx, false)
+        llvm::Value* gep_idx[] = {
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), 0),
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), idx)
         };
-        LLVMValueRef field_ptr = LLVMBuildGEP2(builder, sty, obj_ptr,
-            gep_indices, 2, "field");
-        return LLVMBuildLoad2(builder,
-            LLVMGetElementType(sty)
-                ? LLVMGetElementType(sty)
-                : LLVMInt32TypeInContext(ctx),
-            field_ptr, n.field.data());
+        llvm::Value* field_ptr = B().CreateGEP(sty, obj_ptr, gep_idx, "field");
+        return llvm::wrap(B().CreateLoad(field_ty, field_ptr, std::string(n.field)));
     }
 
     // литерал массива: insertvalue каждого элемента в undef
-    LLVMValueRef Codegen::Impl::gen_array_lit(const Parser::ArrayLitExpr& n) {
-        auto it = aast->expr_type.find(
-            &static_cast<const Parser::Expr&>(
-                *reinterpret_cast<const Parser::Expr*>(&n)));
-        Semantic::TypeID tid = (it != aast->expr_type.end())
-            ? it->second : types->builtin(TokenKind::KwInt32);
-        LLVMTypeRef aty = to_llvm_type(tid);
+    LLVMValueRef Codegen::Impl::gen_array_lit(const Parser::ArrayLitExpr& n,
+                                              const Parser::Expr& e) {
+        Semantic::TypeID tid = expr_tid(&e, types->builtin(TokenKind::KwInt32));
+        llvm::Type* aty = llvm::unwrap(to_llvm_type(tid));
 
-        LLVMValueRef arr = LLVMGetUndef(aty);
+        llvm::Value* arr = llvm::UndefValue::get(aty);
         for (std::size_t i = 0; i < n.elems.size(); ++i) {
-            LLVMValueRef elem = gen_expr(n.elems[i]);
-            arr = LLVMBuildInsertValue(builder, arr, elem,
-                static_cast<unsigned>(i), "arr");
+            llvm::Value* elem = llvm::unwrap(gen_expr(n.elems[i]));
+            arr = B().CreateInsertValue(arr, elem,
+                {static_cast<unsigned>(i)}, "arr");
         }
-        return arr;
+        return llvm::wrap(arr);
     }
 
 
     // литерал структуры: insertvalue каждого поля (индекс из TypeRegistry)
     LLVMValueRef Codegen::Impl::gen_struct_lit(const Parser::StructLitExpr& n) {
         std::string name(n.name);
-        LLVMTypeRef sty = LLVMGetTypeByName2(ctx, name.c_str());
-        if (!sty) return LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false);
+        llvm::StructType* sty = llvm::StructType::getTypeByName(C(), name);
+        if (!sty) return i32_zero();
 
-        LLVMValueRef s = LLVMGetUndef(sty);
+        llvm::Value* s = llvm::UndefValue::get(sty);
 
         // получаем структуру из реестра для маппинга полей
         auto tid_opt = types->by_name(name);
@@ -907,15 +912,15 @@ namespace Codegen {
                     }
                 }
             }
-            LLVMValueRef val = gen_expr(*fexpr);
-            s = LLVMBuildInsertValue(builder, s, val, idx, "");
+            llvm::Value* val = llvm::unwrap(gen_expr(*fexpr));
+            s = B().CreateInsertValue(s, val, {idx}, "");
         }
-        return s;
+        return llvm::wrap(s);
     }
 
 
 
-    // получение указателя для присваивания: IdentExpr → alloca, FieldExpr → GEP
+    // получение указателя для присваивания: IdentExpr → alloca, Field/Index → GEP
     LLVMValueRef Codegen::Impl::gen_lvalue_ptr(const Parser::Expr& e) {
         return std::visit([&](const auto& n) -> LLVMValueRef {
             using T = std::decay_t<decltype(n)>;
@@ -927,41 +932,42 @@ namespace Codegen {
                 }
                 return nullptr;
             }
-            if constexpr (std::is_same_v<T, Parser::FieldExpr>) {
-                LLVMValueRef obj_ptr = gen_lvalue_ptr(*n.object);
-                LLVMTypeRef sty = LLVMGetAllocatedType(obj_ptr);
+            else if constexpr (std::is_same_v<T, Parser::FieldExpr>) {
+                llvm::Value* obj_ptr = llvm::unwrap(gen_lvalue_ptr(*n.object));
+                Semantic::TypeID obj_tid = expr_tid(n.object.get(),
+                    types->builtin(TokenKind::KwInt32));
+                llvm::Type* sty = llvm::unwrap(to_llvm_type(obj_tid));
 
-                // индекс поля по имени
                 unsigned fidx = 0;
-                auto it = aast->expr_type.find(n.object.get());
-                if (it != aast->expr_type.end()) {
-                    Semantic::TypeID obj_tid = types->resolve_alias(it->second);
-                    if (const auto* st = types->get_struct(obj_tid)) {
-                        for (unsigned i = 0; i < st->fields.size(); ++i) {
-                            if (st->fields[i].first == n.field) {
-                                fidx = i;
-                                break;
-                            }
+                if (const auto* st = types->get_struct(obj_tid)) {
+                    for (unsigned i = 0; i < st->fields.size(); ++i) {
+                        if (st->fields[i].first == n.field) {
+                            fidx = i;
+                            break;
                         }
                     }
                 }
 
-                LLVMValueRef gep[] = {
-                    LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false),
-                    LLVMConstInt(LLVMInt32TypeInContext(ctx), fidx, false)
+                llvm::Value* gep[] = {
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), 0),
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), fidx)
                 };
-                return LLVMBuildGEP2(builder, sty, obj_ptr, gep, 2, "fld");
+                return llvm::wrap(B().CreateGEP(sty, obj_ptr, gep, "fld"));
             }
-            if constexpr (std::is_same_v<T, Parser::IndexExpr>) {
-                LLVMValueRef arr_ptr = gen_lvalue_ptr(*n.array);
-                LLVMValueRef idx = gen_expr(*n.index);
-                LLVMTypeRef aty = LLVMGetAllocatedType(arr_ptr);
-                LLVMValueRef gep[] = {
-                    LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, false), idx
+            else if constexpr (std::is_same_v<T, Parser::IndexExpr>) {
+                llvm::Value* arr_ptr = llvm::unwrap(gen_lvalue_ptr(*n.array));
+                llvm::Value* idx = llvm::unwrap(gen_expr(*n.index));
+                Semantic::TypeID arr_tid = expr_tid(n.array.get(),
+                    types->builtin(TokenKind::KwInt32));
+                llvm::Type* aty = llvm::unwrap(to_llvm_type(arr_tid));
+                llvm::Value* gep[] = {
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), 0), idx
                 };
-                return LLVMBuildGEP2(builder, aty, arr_ptr, gep, 2, "idx");
+                return llvm::wrap(B().CreateGEP(aty, arr_ptr, gep, "idx"));
             }
-            return nullptr;
+            else {
+                return nullptr;
+            }
         }, e.node);
     }
 
