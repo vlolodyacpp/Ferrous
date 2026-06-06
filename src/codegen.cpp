@@ -13,6 +13,16 @@ module;
 #include <unordered_map>
 #include <variant>
 #include <vector>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Type.h>
+#include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/Constants.h>
+#include <llvm/IR/Function.h>
+#include <llvm/IR/Verifier.h>
+#include <llvm/Support/raw_ostream.h>
+#include <llvm/Support/TargetSelect.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/Target.h>
@@ -36,6 +46,11 @@ namespace Codegen {
         LLVMContextRef ctx = nullptr;
         LLVMModuleRef mod = nullptr;
         LLVMBuilderRef builder = nullptr;
+
+        // мосты C-API ⇄ C++-API на время пошаговой миграции (Фаза 3)
+        llvm::LLVMContext& C() const { return *llvm::unwrap(ctx); }
+        llvm::Module&      M() const { return *llvm::unwrap(mod); }
+        llvm::IRBuilder<>& B() const { return *llvm::unwrap(builder); }
 
         // аннотации от семантики
         const Semantic::AnnotatedAST* aast = nullptr;
@@ -160,65 +175,64 @@ namespace Codegen {
 
     // преобразование Ferrous-типа в LLVM-тип
     LLVMTypeRef Codegen::Impl::to_llvm_type(Semantic::TypeID tid) const {
-        // string = { i8*, i64 }
-        if (types->equal(tid, types->builtin(TokenKind::KwString))) {
-            LLVMTypeRef fields[] = {
-                LLVMPointerType(LLVMInt8TypeInContext(ctx), 0),
-                LLVMInt64TypeInContext(ctx)
-            };
-            return LLVMStructTypeInContext(ctx, fields, 2, false);
-        }
+        llvm::LLVMContext& c = C();
+
+        // string = { ptr, i64 }
+        if (types->equal(tid, types->builtin(TokenKind::KwString)))
+            return llvm::wrap(llvm::StructType::get(c,
+                { llvm::PointerType::getUnqual(c), llvm::Type::getInt64Ty(c) }));
 
         // void
         if (types->equal(tid, types->builtin(TokenKind::KwVoid)))
-            return LLVMVoidTypeInContext(ctx);
+            return llvm::wrap(llvm::Type::getVoidTy(c));
 
         // bool → i1
         if (types->equal(tid, types->builtin(TokenKind::KwBool)))
-            return LLVMInt1TypeInContext(ctx);
+            return llvm::wrap(llvm::Type::getInt1Ty(c));
 
         // char → i32 (UTF-32 codepoint)
         if (types->equal(tid, types->builtin(TokenKind::KwChar)))
-            return LLVMInt32TypeInContext(ctx);
+            return llvm::wrap(llvm::Type::getInt32Ty(c));
 
         // целые
         if (types->equal(tid, types->builtin(TokenKind::KwInt8)))
-            return LLVMInt8TypeInContext(ctx);
+            return llvm::wrap(llvm::Type::getInt8Ty(c));
         if (types->equal(tid, types->builtin(TokenKind::KwInt16)))
-            return LLVMInt16TypeInContext(ctx);
+            return llvm::wrap(llvm::Type::getInt16Ty(c));
         if (types->equal(tid, types->builtin(TokenKind::KwInt32)))
-            return LLVMInt32TypeInContext(ctx);
+            return llvm::wrap(llvm::Type::getInt32Ty(c));
         if (types->equal(tid, types->builtin(TokenKind::KwInt64)))
-            return LLVMInt64TypeInContext(ctx);
+            return llvm::wrap(llvm::Type::getInt64Ty(c));
 
         // беззнаковые (те же LLVM-типы)
         if (types->equal(tid, types->builtin(TokenKind::KwUint8)))
-            return LLVMInt8TypeInContext(ctx);
+            return llvm::wrap(llvm::Type::getInt8Ty(c));
         if (types->equal(tid, types->builtin(TokenKind::KwUint16)))
-            return LLVMInt16TypeInContext(ctx);
+            return llvm::wrap(llvm::Type::getInt16Ty(c));
         if (types->equal(tid, types->builtin(TokenKind::KwUint32)))
-            return LLVMInt32TypeInContext(ctx);
+            return llvm::wrap(llvm::Type::getInt32Ty(c));
         if (types->equal(tid, types->builtin(TokenKind::KwUint64)))
-            return LLVMInt64TypeInContext(ctx);
+            return llvm::wrap(llvm::Type::getInt64Ty(c));
 
         // float
         if (types->equal(tid, types->builtin(TokenKind::KwFloat32)))
-            return LLVMFloatTypeInContext(ctx);
+            return llvm::wrap(llvm::Type::getFloatTy(c));
         if (types->equal(tid, types->builtin(TokenKind::KwFloat64)))
-            return LLVMDoubleTypeInContext(ctx);
+            return llvm::wrap(llvm::Type::getDoubleTy(c));
 
         // массив
         if (const auto* arr = types->get_array(tid)) {
-            LLVMTypeRef elem = to_llvm_type(arr->elem);
-            return LLVMArrayType(elem, static_cast<unsigned>(arr->size));
+            llvm::Type* elem = llvm::unwrap(to_llvm_type(arr->elem));
+            return llvm::wrap(llvm::ArrayType::get(elem,
+                static_cast<std::uint64_t>(arr->size)));
         }
 
         // структура
         if (const auto* st = types->get_struct(tid)) {
             std::string name = st->name;
-            LLVMTypeRef sty = LLVMGetTypeByName2(ctx, name.c_str());
-            if (sty) return sty;
-            return LLVMStructCreateNamed(ctx, name.c_str());
+            if (llvm::StructType* sty = llvm::StructType::getTypeByName(c, name))
+                return llvm::wrap(sty);
+            return llvm::wrap(llvm::StructType::create(c, name));
         }
 
         // псевдоним (разворачиваем)
@@ -228,23 +242,17 @@ namespace Codegen {
 
         // сюда попадать не должны — ошибка в семантике
         std::cerr << "codegen: unhandled type " << types->name(tid) << '\n';
-        return LLVMInt32TypeInContext(ctx);
+        return llvm::wrap(llvm::Type::getInt32Ty(c));
     }
 
     // размещает alloca в entry-блоке функции (до первой инструкции)
     LLVMValueRef Codegen::Impl::create_entry_alloca(LLVMValueRef fn,
                                               const std::string& name,
                                               LLVMTypeRef type) {
-        LLVMBuilderRef tmp = LLVMCreateBuilderInContext(ctx);
-        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(fn);
-        LLVMValueRef first = LLVMGetFirstInstruction(entry);
-        if (first)
-            LLVMPositionBuilderBefore(tmp, first);
-        else
-            LLVMPositionBuilderAtEnd(tmp, entry);
-        LLVMValueRef alloca = LLVMBuildAlloca(tmp, type, name.c_str());
-        LLVMDisposeBuilder(tmp);
-        return alloca;
+        llvm::Function* f = llvm::cast<llvm::Function>(llvm::unwrap(fn));
+        llvm::BasicBlock& entry = f->getEntryBlock();
+        llvm::IRBuilder<> tmp(&entry, entry.begin());
+        return llvm::wrap(tmp.CreateAlloca(llvm::unwrap(type), nullptr, name));
     }
 
     // создание дочернего скоупа (при входе в блок)
@@ -262,21 +270,22 @@ namespace Codegen {
     // объявление всех runtime-функций в модуле LLVM
     // panic, bounds/div check, print/println, input, строковые операции
     void Codegen::Impl::declare_runtime_functions() {
-        LLVMTypeRef void_ty  = LLVMVoidTypeInContext(ctx);
-        LLVMTypeRef i8p_ty   = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
-        LLVMTypeRef i64_ty   = LLVMInt64TypeInContext(ctx);
-        LLVMTypeRef double_ty = LLVMDoubleTypeInContext(ctx);
+        llvm::LLVMContext& c = C();
+        llvm::Type* void_ty   = llvm::Type::getVoidTy(c);
+        llvm::Type* i8p_ty    = llvm::PointerType::getUnqual(c);
+        llvm::Type* i64_ty    = llvm::Type::getInt64Ty(c);
+        llvm::Type* double_ty = llvm::Type::getDoubleTy(c);
 
-        // строковый тип {i8*, i64}
-        LLVMTypeRef str_fields[] = { i8p_ty, i64_ty };
-        LLVMTypeRef str_ty = LLVMStructTypeInContext(ctx, str_fields, 2, false);
+        // строковый тип {ptr, i64}
+        llvm::StructType* str_ty = llvm::StructType::get(c, { i8p_ty, i64_ty });
 
-        auto decl = [&](const char* name, LLVMTypeRef ret,
-                        std::vector<LLVMTypeRef> params) {
-            LLVMTypeRef ft = LLVMFunctionType(ret, params.data(),
-                static_cast<unsigned>(params.size()), false);
-            functions[name] = LLVMAddFunction(mod, name, ft);
-            function_types[name] = ft;
+        auto decl = [&](const char* name, llvm::Type* ret,
+                        std::vector<llvm::Type*> params) {
+            llvm::FunctionType* ft = llvm::FunctionType::get(ret, params, false);
+            llvm::Function* f = llvm::Function::Create(ft,
+                llvm::Function::ExternalLinkage, name, &M());
+            functions[name] = llvm::wrap(f);
+            function_types[name] = llvm::wrap(ft);
         };
 
         // panic + assert
@@ -301,7 +310,7 @@ namespace Codegen {
 
         // строковые операции
         decl("__ferrous_str_concat", str_ty, {i8p_ty, i64_ty, i8p_ty, i64_ty});
-        decl("__ferrous_str_eq",     LLVMInt8TypeInContext(ctx),
+        decl("__ferrous_str_eq",     llvm::Type::getInt8Ty(c),
              {i8p_ty, i64_ty, i8p_ty, i64_ty});
 
         // преобразования
@@ -309,15 +318,15 @@ namespace Codegen {
         decl("__ferrous_float_to_str", str_ty, {double_ty});
     }
 
-    // регистрация структур в модуле: LLVMStructCreateNamed + поля
+    // регистрация структур в модуле: StructType::setBody
     void Codegen::Impl::declare_structs(const std::vector<Parser::Decl>& decls) {
         for (const auto& d : decls) {
             if (auto* st = std::get_if<Parser::StructDecl>(&d.node)) {
                 std::string name(st->name);
-                LLVMTypeRef sty = LLVMGetTypeByName2(ctx, name.c_str());
+                llvm::StructType* sty = llvm::StructType::getTypeByName(C(), name);
                 if (!sty) continue;
 
-                std::vector<LLVMTypeRef> field_types;
+                std::vector<llvm::Type*> field_types;
                 for (const auto& [fname, ftype] : st->field) {
                     Semantic::TypeID ftid = std::visit(
                         [&](const auto& t) -> Semantic::TypeID {
@@ -330,10 +339,9 @@ namespace Codegen {
                             }
                             return types->builtin(TokenKind::KwVoid);
                         }, ftype.node);
-                    field_types.push_back(to_llvm_type(ftid));
+                    field_types.push_back(llvm::unwrap(to_llvm_type(ftid)));
                 }
-                LLVMStructSetBody(sty, field_types.data(),
-                    static_cast<unsigned>(field_types.size()), false);
+                sty->setBody(field_types, false);
             }
             if (auto* ns = std::get_if<Parser::NameSpaceDecl>(&d.node))
                 declare_structs(ns->decls);

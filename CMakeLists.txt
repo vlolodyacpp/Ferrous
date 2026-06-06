@@ -5,9 +5,9 @@ project(Ferrous
  LANGUAGES C CXX
 )
 
-# LLVM (C API — нет ABI-конфликтов, достаточно системного пакета)
 find_package(LLVM REQUIRED CONFIG)
 message(STATUS "LLVM ${LLVM_PACKAGE_VERSION}: ${LLVM_DIR}")
+separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND "${LLVM_DEFINITIONS}")
 
 add_executable(Ferrous
  src/main.cpp
@@ -19,7 +19,8 @@ target_compile_features(Ferrous PRIVATE
 
 target_compile_options(Ferrous PRIVATE
  -Wall -Wextra -Wpedantic -g
- -Wno-dev
+ -fno-rtti
+ ${LLVM_DEFINITIONS_LIST}
 )
 
 target_include_directories(Ferrous PRIVATE ${LLVM_INCLUDE_DIRS})
