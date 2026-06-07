@@ -1,0 +1,14 @@
+// Строки: конкатенация, длина, сравнение
+fn main() -> int32 {
+    let s1: string = "Hello";
+    let s2: string = ", world";
+    let s3: string = s1 + s2;
+    println(s3);          // Hello, world
+    println(len(s3));     // 12
+    let a: string = "abc";
+    let b: string = "abc";
+    let c: string = "xyz";
+    println(a == b);      // true
+    println(a == c);      // true
+    return 0;
+}

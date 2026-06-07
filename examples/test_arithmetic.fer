@@ -1,0 +1,13 @@
+fn main() -> int32 {
+    let a: int32 = 17;
+    let b: int32 = 5;
+    println(a + b);   // 22
+    println(a - b);   // 12
+    println(a * b);   // 85
+    println(a / b);   // 3
+    println(a % b);   // 2
+    println(-a);      // -17
+    println(2 + 3 * 4);     // 14
+    println((2 + 3) * 4);   // 20
+    return 0;
+}

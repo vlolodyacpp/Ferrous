@@ -1,0 +1,13 @@
+fn main() -> int32 {
+    let t: bool = true;
+    let f: bool = false;
+    println(t && f);  // false
+    println(t || f);  // true
+    println(!t);      // false
+    println(1 < 2);   // true
+    println(2 <= 2);  // true
+    println(3 > 4);   // false
+    println(5 == 5);  // true
+    println(5 != 6);  // true
+    return 0;
+}

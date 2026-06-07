@@ -1,0 +1,13 @@
+fn main() -> int32 {
+    let a = 42;       // int32
+    let b = 3.14;     // float64
+    let c = true;     // bool
+    let s = "hi";     // string
+    println(a);
+    println(b);
+    println(c);
+    println(s);
+    let x = a + 8;    // int32
+    println(x);       // 50
+    return 0;
+}

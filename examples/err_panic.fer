@@ -1,0 +1,4 @@
+fn main() -> int32 {
+    panic("boom");
+    return 0;
+}

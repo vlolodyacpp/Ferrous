@@ -1,0 +1,12 @@
+fn main() -> int32 {
+    let a: char = 'A';
+    let nl: char = '\n';
+    print(a); print('B'); print(nl);   // AB\n
+    let code: uint32 = a as uint32;
+    println(code);                       // 65
+    let u: uint32 = 1071;
+    let ya: char = u as char;
+    println(ya);                         // Я
+    if a == 'A' { println(1); }          // 1
+    return 0;
+}

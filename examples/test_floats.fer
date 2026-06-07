@@ -1,0 +1,22 @@
+// Вещественные: float32/64, экспонента, nan/inf, int->float
+fn main() -> int32 {
+    let a: float32 = 1.5;
+    let b: float64 = 2.25;
+
+    println(a);
+    println(b);
+
+    let e = 1.5e3;          // 1500
+    println(e);
+
+    let pinf = inf;
+    let nnan = nan;
+    println(pinf);
+    println(nnan);
+
+    let i: int32 = 5;
+    let fi: float64 = i as float64;
+    println(fi);            // 5
+    println(b + 0.75);      // 3
+    return 0;
+}

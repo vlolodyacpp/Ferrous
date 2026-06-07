@@ -48,17 +48,19 @@ namespace Lexer {
             } else if (peek() == '/' && peek_next() == '/') {
                 while (peek() != '\n' && !is_end()) advance();
             } else if (peek() == '/' && peek_next() == '*') {
-                advance();
-                advance();
-                while (!is_end() && !(peek() == '*' && peek_next() == '/')) {
-                    advance();
+                advance();                       // '/'
+                advance();                       // '*'
+                int depth = 1;                   // вложенности: /* /* */ */
+                while (!is_end() && depth > 0) {
+                    if (peek() == '/' && peek_next() == '*') {
+                        advance(); advance(); ++depth;   // вложенное открытие
+                    } else if (peek() == '*' && peek_next() == '/') {
+                        advance(); advance(); --depth;   // закрытие
+                    } else {
+                        advance();
+                    }
                 }
-                if (is_end()) {
-                    return;
-                } else {
-                    advance();
-                    advance();
-                }
+                // depth>0 при is_end — незакрытый комментарий; просто выходим
 
             } else {
                 break;

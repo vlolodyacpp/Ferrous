@@ -1,0 +1,12 @@
+// Синонимы типов (прозрачные)
+type Meters = int32;
+type Name   = string;
+fn main() -> int32 {
+    let d: Meters = 100;
+    let n: Name   = "road";
+    println(d);
+    println(n);   // 100, road
+    let d2: Meters = d + 50;
+    println(d2);              // 150
+    return 0;
+}

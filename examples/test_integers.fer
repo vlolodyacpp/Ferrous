@@ -1,0 +1,25 @@
+fn main() -> int32 {
+    let a: int8  = 100;
+    let b: int16 = 30000;
+    let c: int32 = 2000000000;
+    let d: int64 = 9000000000;
+    let e: uint8  = 250;
+    let f: uint32 = 4000000000;
+
+    println(a);
+    println(b);
+    println(c);
+    println(d);
+    println(e);
+    println(f);
+    println(0b1010);    // 10
+
+    let g = 42i64;
+    let h = 7u16;
+    println(g);
+    println(h);
+
+    let w: int64 = c as int64;   // widening
+    println(w);
+    return 0;
+}

@@ -1,0 +1,25 @@
+struct Point {
+    x: float64,
+    y: float64
+}
+struct Line  {
+    a: Point,
+    b: Point
+}
+
+fn mid(p: Point, q: Point) -> Point {
+    return Point { x: p.x + q.x, y: p.y + q.y };
+}
+
+fn main() -> int32 {
+    let mut p: Point = Point { x: 1.0, y: 2.0 };
+    println(p.x);
+    println(p.y);     // 1, 2
+    p.y = 5.0;
+    println(p.y);                   // 5
+    let l: Line = Line { a: Point { x: 0.0, y: 0.0 }, b: Point { x: 3.0, y: 4.0 } };
+    println(l.b.x);                 // 3
+    let m: Point = mid(p, l.b);
+    println(m.x);                   // 1+3 = 4
+    return 0;
+}

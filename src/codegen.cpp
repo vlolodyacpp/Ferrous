@@ -43,19 +43,24 @@ namespace Codegen {
 
     // реализация кодогенератора LLVM-типы видны только здесь
     struct Codegen::Impl {
-        // LLVM C++ API — владеющие указатели (освобождаются в ~Impl)
         llvm::LLVMContext* ctx = nullptr;
         llvm::Module*      mod = nullptr;
         llvm::IRBuilder<>* builder = nullptr;
 
         // короткие аксессоры
-        llvm::LLVMContext& C() const { return *ctx; }
-        llvm::Module&      M() const { return *mod; }
-        llvm::IRBuilder<>& B() const { return *builder; }
+        llvm::LLVMContext& C() const {
+            return *ctx;
+        }
+        llvm::Module&      M() const {
+            return *mod;
+        }
+        llvm::IRBuilder<>& B() const {
+            return *builder;
+        }
         llvm::Value* i32_zero() const {
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), 0);
         }
-        // тип Ferrous-выражения из аннотаций (opaque-pointer-safe источник типов)
+        // тип выражения из аннотаций (opaque-pointer-safe источник типов)
         Semantic::TypeID expr_tid(const Parser::Expr* e, Semantic::TypeID fb) const {
             auto it = aast->expr_type.find(e);
             return it != aast->expr_type.end()
@@ -66,10 +71,10 @@ namespace Codegen {
         const Semantic::AnnotatedAST* aast = nullptr;
         const Semantic::TypeRegistry* types = nullptr;
 
-        // маппинг Ferrous → LLVM
+        // маппинг → LLVM
         llvm::Type* to_llvm_type(Semantic::TypeID) const;
 
-        // манглинг по Ferrous-типам (одинаков в declare и в gen_call)
+        // манглинг по типам
         std::string mangle(const std::string& base,
                            const std::vector<Semantic::TypeID>& params) const {
             std::string m = base;
@@ -175,6 +180,20 @@ namespace Codegen {
             if constexpr (std::is_same_v<T, Parser::NamedTypeRef>) {
                 auto tid = types.by_name(std::string(t.name));
                 return tid.value_or(fallback);
+            }
+            if constexpr (std::is_same_v<T, Parser::ArrayTypeRef>) {
+                // [elem; N] — резолвим элемент и ищем уже созданный тип массива
+                Semantic::TypeID elem = resolve_typeid(*t.elem, types, fallback);
+                std::string_view s = t.size;
+                int base = 10;
+                if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+                    s = s.substr(2); base = 16;
+                } else if (s.size() > 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B')) {
+                    s = s.substr(2); base = 2;
+                }
+                std::uint64_t size = 0;
+                std::from_chars(s.data(), s.data() + s.size(), size, base);
+                return types.find_array(elem, size).value_or(fallback);
             }
             return fallback;
         }, tr.node);
@@ -1058,16 +1077,17 @@ namespace Codegen {
 
         B().CreateCondBr(cond, then_bb, else_bb ? else_bb : merge_bb);
 
-        // then
+        // then — ветвимся из ТЕКУЩЕГО блока: после вложенного control flow
+        // активный блок уже не then_bb, а merge/exit вложенной конструкции
         B().SetInsertPoint(then_bb);
         gen_stmt(*n.then_body);
-        if (!then_bb->getTerminator()) B().CreateBr(merge_bb);
+        if (!B().GetInsertBlock()->getTerminator()) B().CreateBr(merge_bb);
 
         // else
         if (else_bb) {
             B().SetInsertPoint(else_bb);
             gen_stmt(*n.else_body);
-            if (!else_bb->getTerminator()) B().CreateBr(merge_bb);
+            if (!B().GetInsertBlock()->getTerminator()) B().CreateBr(merge_bb);
         }
 
         B().SetInsertPoint(merge_bb);
@@ -1102,7 +1122,8 @@ namespace Codegen {
         cg_in_loop = true;
         gen_stmt(*n.body);
         cg_in_loop = old_loop;
-        if (!body_bb->getTerminator()) B().CreateBr(cond_bb);
+        // back-edge из ТЕКУЩЕГО блока (после вложенного if тело уже не body_bb)
+        if (!B().GetInsertBlock()->getTerminator()) B().CreateBr(cond_bb);
 
         // exit
         B().SetInsertPoint(exit_bb);
@@ -1300,8 +1321,8 @@ namespace Codegen {
         for (const auto& s : fn.body.elems)
             gen_stmt(s);
 
-        // если void и нет return — вставляем ret void
-        if (!fn_v->back().getTerminator() &&
+        // если void и нет return — вставляем ret void в ТЕКУЩИЙ блок
+        if (!B().GetInsertBlock()->getTerminator() &&
             types->equal(cg_return_type, types->void_type())) {
             B().CreateRetVoid();
         }

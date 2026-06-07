@@ -274,6 +274,15 @@ namespace Semantic {
         return id;
     }
 
+    // поиск уже зарегистрированного массива без создания (const, для codegen)
+    std::optional<TypeID> TypeRegistry::find_array(TypeID elem, std::uint64_t size) const {
+        ArrayKey key{normalize(elem), size};
+        if (auto it = array_cache.find(key); it != array_cache.end()) {
+            return it->second;
+        }
+        return std::nullopt;
+    }
+
     // заглушка для структуры
     TypeID TypeRegistry::struct_placeholder(std::string_view name) {
         TypeID id{static_cast<std::uint32_t>(entries.size())};
@@ -884,6 +893,14 @@ namespace Semantic {
 
             // float-литерал
             if constexpr (std::is_same_v<T, Parser::LitFloatExpr>) {
+                auto parsed = parse_float_lexeme(n.value);
+                if (parsed.suffix) {
+                    // с суффиксом — конкретный тип (f32/f64)
+                    return *parsed.suffix == FloatSuffix::F32
+                        ? registry.builtin(TokenKind::KwFloat32)
+                        : registry.builtin(TokenKind::KwFloat64);
+                }
+                // без суффикса — из контекста, иначе untyped (по умолчанию float64)
                 if (expected && !registry.is_untyped(*expected)) {
                     return *expected;
                 }
@@ -1049,14 +1066,23 @@ namespace Semantic {
                         case TokenKind::OpStar:
                         case TokenKind::OpSlash:
                         case TokenKind::OpPercent: {
+                            // конкатенация строк
+                            if (n.op == TokenKind::OpPlus &&
+                                registry.equal(lhs_norm, registry.builtin(TokenKind::KwString)) &&
+                                registry.equal(rhs_norm, registry.builtin(TokenKind::KwString))) {
+                                return registry.builtin(TokenKind::KwString);
+                            }
                             // резолв untyped перед арифметикой
-                            if (!registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm))
-                                { rhs_t = lhs_t; rhs_norm = lhs_norm; }
-                            else if (registry.is_untyped(lhs_norm) && !registry.is_untyped(rhs_norm))
-                                { lhs_t = rhs_t; lhs_norm = rhs_norm; }
-                            else if (registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm))
-                                { lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
-                                  lhs_norm = rhs_norm = lhs_t; }
+                            if (!registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm)) {
+                                rhs_t = lhs_t; rhs_norm = lhs_norm;
+                            }
+                            else if (registry.is_untyped(lhs_norm) && !registry.is_untyped(rhs_norm)) {
+                                lhs_t = rhs_t; lhs_norm = rhs_norm;
+                            }
+                            else if (registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm)){
+                                lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
+                                lhs_norm = rhs_norm = lhs_t;
+                            }
                             if (!is_numeric(lhs_norm) || !is_numeric(rhs_norm)) {
                                 diag.error(0, 0, "arithmetic on non-numeric types: "
                                     + registry.name(lhs_t) + " and " + registry.name(rhs_t));
@@ -1067,12 +1093,6 @@ namespace Semantic {
                                 (registry.is_float(lhs_norm) || registry.is_float(rhs_norm))) {
                                 diag.error(0, 0, "modulo on float types");
                                 return registry.error_type();
-                            }
-                            // конкатенация строк
-                            if (n.op == TokenKind::OpPlus &&
-                                registry.equal(lhs_norm, registry.builtin(TokenKind::KwString)) &&
-                                registry.equal(rhs_norm, registry.builtin(TokenKind::KwString))) {
-                                return registry.builtin(TokenKind::KwString);
                             }
                             aast.expr_type[n.lhs.get()] = lhs_t;
                             aast.expr_type[n.rhs.get()] = rhs_t;

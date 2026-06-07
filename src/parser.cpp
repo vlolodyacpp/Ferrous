@@ -149,12 +149,14 @@ namespace Parser {
     Expr Parser::parse_prefix() {
         const auto t = peek();
         const auto t_next  = peek_next();
+        // (....)
         if (t.kind == TokenKind::SepLParen) {
             advance();
             auto inner = parse_expr(0);
             expect(TokenKind::SepRParen);
             return parse_postfix(Expr {GroupExpr{std::make_unique<Expr>(std::move(inner))}});
         }
+        // -x, +x
         if (t.kind == TokenKind::OpMinus || t.kind == TokenKind::OpBang) {
             advance();
             auto inner = parse_prefix();
