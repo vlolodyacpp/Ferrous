@@ -2,7 +2,10 @@ fn main() -> int32 {
     let x: int32 = 5;
     assert(x > 0, "x must be positive");
     assert(x < 10);
+
+    len z: char  = 'a';
+    println(z);
     // раскомментировать для проверки провала:
-    assert(x > 100, "x is too small");
+    // assert(x > 100, "x is too small");
     return 0;
 }

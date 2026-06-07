@@ -21,9 +21,12 @@ module;
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/Instructions.h>   // llvm::AllocaInst (isa в create_entry_alloca)
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/TargetSelect.h>
+#include <llvm/TargetParser/Host.h>      // llvm::sys::getDefaultTargetTriple
+#include <llvm/TargetParser/Triple.h>    // llvm::Triple
 
 module Ferrous.Codegen;
 import Ferrous.Printer;
@@ -153,6 +156,7 @@ namespace Codegen {
         // встроенные функции
         llvm::Value* gen_builtin_call(const std::string& name,
                                       const std::vector<llvm::Value*>& args,
+                                      const std::vector<Semantic::TypeID>& arg_tids,
                                       std::size_t line);
 
         ~Impl();
@@ -176,7 +180,7 @@ namespace Codegen {
         }, tr.node);
     }
 
-    // PIMPL-обёртки (публичный класс лишь делегирует в Impl)
+
     Codegen::Codegen() : impl(std::make_unique<Impl>()) {}
     Codegen::~Codegen() = default;
     void Codegen::generate(const std::vector<Parser::Decl>& decls,
@@ -192,7 +196,7 @@ namespace Codegen {
         delete ctx;     ctx = nullptr;
     }
 
-    // преобразование Ferrous-типа в LLVM-тип
+    // преобразование типа в LLVM-тип
     llvm::Type* Codegen::Impl::to_llvm_type(Semantic::TypeID tid) const {
         llvm::LLVMContext& c = C();
 
@@ -248,8 +252,7 @@ namespace Codegen {
         // массив
         if (const auto* arr = types->get_array(tid)) {
             llvm::Type* elem = to_llvm_type(arr->elem);
-            return llvm::ArrayType::get(elem,
-                static_cast<std::uint64_t>(arr->size));
+            return llvm::ArrayType::get(elem, arr->size);
         }
 
         // структура
@@ -276,7 +279,10 @@ namespace Codegen {
                                               llvm::Type* type) {
         llvm::Function* f = llvm::cast<llvm::Function>(fn);
         llvm::BasicBlock& entry = f->getEntryBlock();
-        llvm::IRBuilder<> tmp(&entry, entry.begin());
+        // точка вставки - после уже существующих alloca - остаются в порядке объявления
+        llvm::BasicBlock::iterator ip = entry.begin();
+        while (ip != entry.end() && llvm::isa<llvm::AllocaInst>(*ip)) ++ip;
+        llvm::IRBuilder<> tmp(&entry, ip);
         return tmp.CreateAlloca(type, nullptr, name);
     }
 
@@ -322,13 +328,24 @@ namespace Codegen {
         decl("__ferrous_mod_check",   i64_ty, {i64_ty, i64_ty});
         decl("__ferrous_bounds_check", void_ty, {i64_ty, i64_ty, i64_ty});
 
-        // вывод
-        decl("__ferrous_print_int64",    void_ty, {i64_ty});
-        decl("__ferrous_print_float64",  void_ty, {double_ty});
-        decl("__ferrous_print_string",   void_ty, {i8p_ty, i64_ty});
-        decl("__ferrous_println_int64",  void_ty, {i64_ty});
-        decl("__ferrous_println_float64",void_ty, {double_ty});
-        decl("__ferrous_println_string", void_ty, {i8p_ty, i64_ty});
+        // вывод — функция на каждый тип
+        llvm::Type* i8_ty  = llvm::Type::getInt8Ty(c);
+        llvm::Type* i16_ty = llvm::Type::getInt16Ty(c);
+        llvm::Type* i32_ty = llvm::Type::getInt32Ty(c);
+        for (const char* pfx : {"print", "println"}) {
+            auto d = [&](const std::string& suf, llvm::Type* arg) {
+                decl((std::string("__ferrous_") + pfx + "_" + suf).c_str(),
+                     void_ty, {arg});
+            };
+            d("int8",  i8_ty);   d("int16",  i16_ty); d("int32",  i32_ty); d("int64",  i64_ty);
+            d("uint8", i8_ty);   d("uint16", i16_ty); d("uint32", i32_ty); d("uint64", i64_ty);
+            d("float32", llvm::Type::getFloatTy(c));
+            d("float64", double_ty);
+            d("bool", i8_ty);    // bool передаётся как i8 (ZExt из i1)
+            d("char", i32_ty);   // codepoint
+            decl((std::string("__ferrous_") + pfx + "_string").c_str(),
+                 void_ty, {i8p_ty, i64_ty});
+        }
 
         // ввод
         decl("__ferrous_input", str_ty, {});
@@ -337,10 +354,6 @@ namespace Codegen {
         decl("__ferrous_str_concat", str_ty, {i8p_ty, i64_ty, i8p_ty, i64_ty});
         decl("__ferrous_str_eq",     llvm::Type::getInt8Ty(c),
              {i8p_ty, i64_ty, i8p_ty, i64_ty});
-
-        // преобразования
-        decl("__ferrous_int_to_str",   str_ty, {i64_ty});
-        decl("__ferrous_float_to_str", str_ty, {double_ty});
     }
 
     // регистрация структур в модуле: StructType::setBody
@@ -353,8 +366,7 @@ namespace Codegen {
 
                 std::vector<llvm::Type*> field_types;
                 for (const auto& [fname, ftype] : st->field) {
-                    Semantic::TypeID ftid = std::visit(
-                        [&](const auto& t) -> Semantic::TypeID {
+                    Semantic::TypeID ftid = std::visit([&](const auto& t) -> Semantic::TypeID {
                             using T = std::decay_t<decltype(t)>;
                             if constexpr (std::is_same_v<T, Parser::BuiltinTypeRef>)
                                 return types->builtin(t.type_kind);
@@ -363,7 +375,7 @@ namespace Codegen {
                                 return tid.value_or(types->builtin(TokenKind::KwVoid));
                             }
                             return types->builtin(TokenKind::KwVoid);
-                        }, ftype.node);
+                    }, ftype.node);
                     field_types.push_back(to_llvm_type(ftid));
                 }
                 sty->setBody(field_types, false);
@@ -380,7 +392,7 @@ namespace Codegen {
             if (auto* fn = std::get_if<Parser::FnDecl>(&d.node)) {
                 std::string name = prefix + std::string(fn->name);
 
-                // main не манглим (только настоящий top-level entry)
+                // main не манглим
                 if (name == "main") {
                     Semantic::TypeID rtid = fn->return_type
                         ? resolve_typeid(*fn->return_type, *types,
@@ -394,7 +406,7 @@ namespace Codegen {
                     continue;
                 }
 
-                // манглинг: name + Ferrous-типы параметров для перегрузок
+                // манглинг: name + типы параметров для перегрузок
                 std::vector<Semantic::TypeID> ptids;
                 std::vector<llvm::Type*> param_types;
                 for (const auto& [pname, ptype] : fn->params) {
@@ -427,8 +439,6 @@ namespace Codegen {
     }
 
 
-
-    // switch по std::variant — делегирует конкретному gen_* методу
     llvm::Value* Codegen::Impl::gen_expr(const Parser::Expr& e) {
         return std::visit([&](const auto& n) -> llvm::Value* {
             using T = std::decay_t<decltype(n)>;
@@ -610,9 +620,8 @@ namespace Codegen {
         return i32_zero();
     }
 
-    // ── gen_unary ──────────────────────────────────────────────────────
 
-    // унарный минус (Neg/FNeg) или логическое НЕ (Not)
+    // унарный минус или логическое не
     llvm::Value* Codegen::Impl::gen_unary(const Parser::UnaryExpr& n) {
         llvm::Value* op = gen_expr(*n.operand);
 
@@ -646,6 +655,13 @@ namespace Codegen {
             auto fn = llvm::cast<llvm::Function>(functions[name]);
             auto ft = llvm::cast<llvm::FunctionType>(function_types[name]);
             return B().CreateCall(ft, fn, a, lbl);
+        };
+        // сравнение строк: распаковываем {ptr,len} обоих и зовём runtime → i8
+        auto str_eq = [&](llvm::Value* a, llvm::Value* b) -> llvm::Value* {
+            return call_rt("__ferrous_str_eq", {
+                B().CreateExtractValue(a, {0u}), B().CreateExtractValue(a, {1u}),
+                B().CreateExtractValue(b, {0u}), B().CreateExtractValue(b, {1u})
+            }, "streq");
         };
 
         switch (n.op) {
@@ -685,9 +701,19 @@ namespace Codegen {
             }
 
             case TokenKind::OpEqEq:
+                if (ty->isStructTy()) {  // строки: __ferrous_str_eq(a,b) → i8 (1/0)
+                    llvm::Value* eq = str_eq(lhs, rhs);
+                    return B().CreateICmpNE(eq,
+                        llvm::ConstantInt::get(eq->getType(), 0), "eq");
+                }
                 return is_float ? B().CreateFCmpOEQ(lhs, rhs, "eq")
                                            : B().CreateICmpEQ(lhs, rhs, "eq");
             case TokenKind::OpBangEq:
+                if (ty->isStructTy()) {  // строки: инверсия str_eq
+                    llvm::Value* eq = str_eq(lhs, rhs);
+                    return B().CreateICmpEQ(eq,
+                        llvm::ConstantInt::get(eq->getType(), 0), "ne");
+                }
                 return is_float ? B().CreateFCmpONE(lhs, rhs, "ne")
                                            : B().CreateICmpNE(lhs, rhs, "ne");
             case TokenKind::OpLt:
@@ -768,7 +794,7 @@ namespace Codegen {
             return i32_zero();
         }
 
-        // аргументы (значения + Ferrous-типы из аннотаций для манглинга)
+        // аргументы (значения + типы для манглинга)
         std::vector<llvm::Value*> args;
         std::vector<Semantic::TypeID> arg_tids;
         for (const auto& arg : n.args) {
@@ -783,10 +809,10 @@ namespace Codegen {
             fn_name == "input" || fn_name == "len" ||
             fn_name == "exit" || fn_name == "panic" ||
             fn_name == "assert") {
-            return gen_builtin_call(fn_name, args, n.line);
+            return gen_builtin_call(fn_name, args, arg_tids, n.line);
         }
 
-        // пользовательская функция — манглинг по Ferrous-типам
+        // пользовательская функция — манглинг по типам
         std::string mangled = mangle(fn_name, arg_tids);
 
         llvm::Function* callee = nullptr;
@@ -1109,6 +1135,7 @@ namespace Codegen {
     // встроенные: print/println (диспетчер по типу), input, len, exit, panic, assert
     llvm::Value* Codegen::Impl::gen_builtin_call(const std::string& name,
                                            const std::vector<llvm::Value*>& args,
+                                           const std::vector<Semantic::TypeID>& arg_tids,
                                            std::size_t line) {
         // распаковка аргументов в C++-значения
         std::vector<llvm::Value*> av;
@@ -1125,30 +1152,39 @@ namespace Codegen {
             llvm::Type::getInt64Ty(C()), line);
 
         if (name == "print" || name == "println") {
-            bool ln = (name == "println");
+            const std::string pfx = (name == "println") ? "println" : "print";
             if (av.empty()) return nullptr;
             llvm::Value* val = av[0];
             llvm::Type* ty = val->getType();
+            auto rt = [&](const std::string& suf, std::vector<llvm::Value*> a) {
+                return call_rt(("__ferrous_" + pfx + "_" + suf).c_str(), a);
+            };
 
-            // string
+            // строка
             if (ty->isStructTy()) {
                 llvm::Value* ptr = B().CreateExtractValue(val, {0u});
                 llvm::Value* len = B().CreateExtractValue(val, {1u});
-                return call_rt(ln ? "__ferrous_println_string"
-                                             : "__ferrous_print_string", {ptr, len});
+                return rt("string", {ptr, len});
             }
-            // float
-            if (ty->isFloatingPointTy()) {
-                if (ty->isFloatTy())
-                    val = B().CreateFPExt(val, llvm::Type::getDoubleTy(C()), "promote");
-                return call_rt(ln ? "__ferrous_println_float64"
-                                             : "__ferrous_print_float64", {val});
-            }
-            // int
-            if (val->getType()->getIntegerBitWidth() < 64)
-                val = B().CreateSExt(val, llvm::Type::getInt64Ty(C()), "promote");
-            return call_rt(ln ? "__ferrous_println_int64"
-                                         : "__ferrous_print_int64", {val});
+
+            if (ty->isFloatingPointTy())
+                return rt(ty->isFloatTy() ? "float32" : "float64", {val});
+            // целое / char / bool — выбор функции по типу аргумента
+            // (LLVM-ширины недостаточно: int32/uint32/char — все i32)
+            Semantic::TypeID tid = arg_tids.empty()
+                ? types->builtin(TokenKind::KwInt32)
+                : types->resolve_alias(arg_tids[0]);
+            auto is = [&](TokenKind k) { return types->equal(tid, types->builtin(k)); };
+            const char* suf =
+                is(TokenKind::KwInt8)   ? "int8"   : is(TokenKind::KwInt16)  ? "int16"  :
+                is(TokenKind::KwInt32)  ? "int32"  : is(TokenKind::KwInt64)  ? "int64"  :
+                is(TokenKind::KwUint8)  ? "uint8"  : is(TokenKind::KwUint16) ? "uint16" :
+                is(TokenKind::KwUint32) ? "uint32" : is(TokenKind::KwUint64) ? "uint64" :
+                is(TokenKind::KwChar)   ? "char"   : is(TokenKind::KwBool)   ? "bool"   :
+                "int32";  // fallback (untyped/unknown)
+            if (is(TokenKind::KwBool))  // i1 → i8 для рантайма
+                val = B().CreateZExt(val, llvm::Type::getInt8Ty(C()), "boolb");
+            return rt(suf, {val});
         }
 
         if (name == "input")
@@ -1220,7 +1256,7 @@ namespace Codegen {
             if (m_it != functions.end()) llvm_fn = m_it->second;
             else return;
         } else {
-            // тот же манглинг по Ferrous-типам, что и в declare/gen_call
+            // тот же манглинг по типам, что и в declare/gen_call
             std::vector<Semantic::TypeID> ptids;
             for (const auto& [pname, ptype] : fn.params)
                 ptids.push_back(resolve_typeid(ptype, *types,
@@ -1302,6 +1338,9 @@ namespace Codegen {
 
         ctx = new llvm::LLVMContext();
         mod = new llvm::Module("ferrous_module", *ctx);
+        // triple хоста — иначе clang++ перетирает пустой triple и выдаёт
+        // warning: overriding the module target triple
+        mod->setTargetTriple(llvm::Triple(llvm::sys::getDefaultTargetTriple()));
         builder = new llvm::IRBuilder<>(*ctx);
 
         // инициализация нативного таргета

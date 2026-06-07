@@ -11,9 +11,12 @@
 Ferrous компилируется в **LLVM IR** с последующей компиляцией в нативный
 исполняемый файл через `clang++`. LLVM берёт на себя распределение
 регистров, оптимизации и ABI целевой платформы. Для взаимодействия с
-LLVM используется **LLVM C API** (`llvm-c/Core.h`) — это позволяет
-избежать ABI-конфликта между libc++ (используется компилятором для
-`import std;`) и libstdc++ (с которой собран системный LLVM).
+LLVM используется **LLVM C++ API** (`llvm/IR/*`). Чтобы не было ABI-конфликта
+с системным LLVM (собран с libstdc++), сам компилятор тоже собирается на
+libstdc++ — без `import std` и без `-stdlib=libc++` (используются обычные
+`#include`). TU кодогена компилируется с `-fno-rtti` (системный LLVM собран
+без RTTI). Интерфейс модуля `Ferrous.Codegen` спрятан за PIMPL, поэтому
+заголовки LLVM не протекают в остальные модули.
 
 ## 2. Соглашения о вызовах
 
@@ -91,17 +94,17 @@ ABI вручную.
 | `__ferrous_div_check` | `(i64, i64) -> i64` | Проверка деления на ноль |
 | `__ferrous_mod_check` | `(i64, i64) -> i64` | Проверка остатка на ноль |
 | `__ferrous_bounds_check` | `(i64, i64, i64)` | Проверка границ массива |
-| `__ferrous_print_int64` | `(i64)` | Вывод int64 |
+| `__ferrous_print_{int8…int64}` | `(iN)` | Вывод знакового целого (по размеру) |
+| `__ferrous_print_{uint8…uint64}` | `(iN)` | Вывод беззнакового целого (по размеру) |
+| `__ferrous_print_float32` | `(float)` | Вывод float32 |
 | `__ferrous_print_float64` | `(double)` | Вывод float64 |
+| `__ferrous_print_bool` | `(i8)` | Вывод bool как `true`/`false` |
+| `__ferrous_print_char` | `(i32)` | Вывод char как символа (UTF-8 из codepoint) |
 | `__ferrous_print_string` | `(ptr, i64)` | Вывод строки |
-| `__ferrous_println_int64` | `(i64)` | Вывод int64 + \\n |
-| `__ferrous_println_float64` | `(double)` | Вывод float64 + \\n |
-| `__ferrous_println_string` | `(ptr, i64)` | Вывод строки + \\n |
+| `__ferrous_println_*` | — | то же + перевод строки (по каждому типу) |
 | `__ferrous_input` | `() -> {ptr, i64}` | Чтение строки из stdin |
 | `__ferrous_str_concat` | `(ptr, i64, ptr, i64) -> {ptr, i64}` | Конкатенация строк |
 | `__ferrous_str_eq` | `(ptr, i64, ptr, i64) -> i8` | Сравнение строк |
-| `__ferrous_int_to_str` | `(i64) -> {ptr, i64}` | int64 → string |
-| `__ferrous_float_to_str` | `(double) -> {ptr, i64}` | float64 → string |
 
 ## 8. Pipeline компиляции
 
