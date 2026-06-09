@@ -240,7 +240,8 @@ namespace Semantic {
     }
 
     bool TypeRegistry::is_float(TypeID id) const {
-        return is_fixed_float(resolve_alias(id));
+        id = resolve_alias(id);
+        return is_fixed_float(id) || is_untyped_float(id);
     }
 
     // разрешение цепочки псевдонимов
@@ -310,7 +311,7 @@ namespace Semantic {
         }
     }
 
-    // объявление псевдонима (без цели)
+    // объявление псевдонима
     TypeID TypeRegistry::declare_alias(std::string_view name) {
         TypeID id{static_cast<std::uint32_t>(entries.size())};
         entries.emplace_back(AliasType{std::string(name), error_id, false});
@@ -577,21 +578,21 @@ namespace Semantic {
         for (const auto& d : decls) {
             if (auto* st = std::get_if<Parser::StructDecl>(&d.node)) {
                 if (registry.by_name(st -> name)) {
-                    diag.error(0, 0, "type '" + std::string(st -> name) + "' already defined");
+                    diag.error(d.line, d.column, "type '" + std::string(st -> name) + "' already defined");
                     continue;
                 }
                 TypeID id = registry.struct_placeholder(st -> name);
                 if (!scope.insert(Symbol{SymbolKind::Struct, st -> name, TypeSymbol{id}})) {
-                    diag.error(0, 0, "'" + std::string(st -> name) + "' already declared");
+                    diag.error(d.line, d.column, "'" + std::string(st -> name) + "' already declared");
                 }
             } else if (auto* ta = std::get_if<Parser::TypeAliasDecl>(&d.node)) {
                 if (registry.by_name(ta -> name)) {
-                    diag.error(0, 0, "type '" + std::string(ta -> name) + "' already defined");
+                    diag.error(d.line, d.column, "type '" + std::string(ta -> name) + "' already defined");
                     continue;
                 }
                 TypeID id = registry.declare_alias(ta -> name);
                 if (!scope.insert(Symbol{SymbolKind::TypeAllias, ta -> name, TypeSymbol{id}})) {
-                    diag.error(0, 0, "'" + std::string(ta -> name) + "' already declared");
+                    diag.error(d.line, d.column, "'" + std::string(ta -> name) + "' already declared");
                 }
             } else if (auto* ns = std::get_if<Parser::NameSpaceDecl>(&d.node)) {
                 Scope& ns_scope = ensure_namespace(scope, ns->name);
@@ -616,7 +617,7 @@ namespace Semantic {
 
                 for (const auto& [fname, ftype] : st -> field) {
                     if (!seen_fields.insert(fname).second) {
-                        diag.error(0, 0, "duplicate field '" + std::string(fname) + "'");
+                        diag.error(d.line, d.column, "duplicate field '" + std::string(fname) + "'");
                         continue;
                     }
                     auto tid = resolve_type(ftype);
@@ -866,7 +867,7 @@ namespace Semantic {
             if constexpr (std::is_same_v<T, Parser::LitIntExpr>) {
                 auto parsed = parse_int_lexeme(n.value);
                 if (!parsed) {
-                    diag.error(0, 0, "invalid integer literal '" + std::string(n.value) + "'");
+                    diag.error(e.line, e.column, "invalid integer literal '" + std::string(n.value) + "'");
                     return registry.error_type();
                 }
                 if (parsed->suffix) {
@@ -932,19 +933,19 @@ namespace Semantic {
                     else if (raw == "\\\"") codepoint = '"';
                     else if (raw == "\\0") codepoint = 0x00;
                     else {
-                        diag.error(0, 0, "unknown escape sequence '\\"
+                        diag.error(e.line, e.column, "unknown escape sequence '\\"
                             + std::string(raw.substr(1)) + "'");
                         return registry.error_type();
                     }
                 } else if (raw.size() == 1) {
                     codepoint = static_cast<std::uint8_t>(raw[0]);
                 } else {
-                    diag.error(0, 0, "invalid char literal");
+                    diag.error(e.line, e.column, "invalid char literal");
                     return registry.error_type();
                 }
 
                 if (codepoint > 0x10FFFF) {
-                    diag.error(0, 0, "char codepoint out of range");
+                    diag.error(e.line, e.column, "char codepoint out of range");
                 }
                 return registry.builtin(TokenKind::KwChar);
             }
@@ -958,21 +959,21 @@ namespace Semantic {
             if constexpr (std::is_same_v<T, Parser::IdentExpr>) {
                 Symbol* sym = current_scope->lookup_chain(n.value);
                 if (!sym) {
-                    diag.error(0, 0, "undefined identifier '" + std::string(n.value) + "'");
+                    diag.error(e.line, e.column, "undefined identifier '" + std::string(n.value) + "'");
                     return registry.error_type();
                 }
                 if (sym->kind == SymbolKind::Variable) {
                     return std::get<VarSymbol>(sym->data).type;
                 }
                 if (sym->kind == SymbolKind::Function) {
-                    diag.error(0, 0, "cannot use function '" + std::string(n.value) + "' as a value");
+                    diag.error(e.line, e.column, "cannot use function '" + std::string(n.value) + "' as a value");
                     return registry.error_type();
                 }
                 if (sym->kind == SymbolKind::Struct || sym->kind == SymbolKind::TypeAllias) {
-                    diag.error(0, 0, "cannot use type '" + std::string(n.value) + "' as a value");
+                    diag.error(e.line, e.column, "cannot use type '" + std::string(n.value) + "' as a value");
                     return registry.error_type();
                 }
-                diag.error(0, 0, "cannot use '" + std::string(n.value) + "' as an expression");
+                diag.error(e.line, e.column, "cannot use '" + std::string(n.value) + "' as an expression");
                 return registry.error_type();
             }
 
@@ -982,7 +983,7 @@ namespace Semantic {
                 for (std::size_t i = 0; i < n.segments.size() - 1; ++i) {
                     Symbol* ns_sym = s->lookup_chain(n.segments[i]);
                     if (!ns_sym || ns_sym->kind != SymbolKind::Namespace) {
-                        diag.error(0, 0, "unknown namespace '" + std::string(n.segments[i]) + "'");
+                        diag.error(e.line, e.column, "unknown namespace '" + std::string(n.segments[i]) + "'");
                         return registry.error_type();
                     }
                     s = std::get<NamespaceSymbol>(ns_sym->data).scope;
@@ -990,17 +991,17 @@ namespace Semantic {
                 std::string_view last = n.segments.back();
                 Symbol* sym = s->lookup_local(last);
                 if (!sym) {
-                    diag.error(0, 0, "undefined identifier '" + std::string(last) + "' in path");
+                    diag.error(e.line, e.column, "undefined identifier '" + std::string(last) + "' in path");
                     return registry.error_type();
                 }
                 if (sym->kind == SymbolKind::Variable) {
                     return std::get<VarSymbol>(sym->data).type;
                 }
                 if (sym->kind == SymbolKind::Function) {
-                    diag.error(0, 0, "cannot use function '" + std::string(last) + "' as a value");
+                    diag.error(e.line, e.column, "cannot use function '" + std::string(last) + "' as a value");
                     return registry.error_type();
                 }
-                diag.error(0, 0, "cannot use '" + std::string(last) + "' as an expression");
+                diag.error(e.line, e.column, "cannot use '" + std::string(last) + "' as an expression");
                 return registry.error_type();
             }
 
@@ -1022,7 +1023,7 @@ namespace Semantic {
                         return def;
                     }
                     if (!registry.is_fixed_int(norm) && !registry.is_fixed_float(norm)) {
-                        diag.error(0, 0, "unary minus requires numeric operand, got " + registry.name(inner));
+                        diag.error(e.line, e.column, "unary minus requires numeric operand, got " + registry.name(inner));
                         return registry.error_type();
                     }
                     return inner;
@@ -1031,12 +1032,12 @@ namespace Semantic {
                 if (n.op == TokenKind::OpBang) {
                     TypeID norm = registry.resolve_alias(inner);
                     if (!registry.equal(norm, registry.builtin(TokenKind::KwBool))) {
-                        diag.error(0, 0, "logical not requires bool operand, got " + registry.name(inner));
+                        diag.error(e.line, e.column, "logical not requires bool operand, got " + registry.name(inner));
                         return registry.error_type();
                     }
                     return registry.builtin(TokenKind::KwBool);
                 }
-                diag.error(0, 0, "unknown unary operator");
+                diag.error(e.line, e.column, "unknown unary operator");
                 return registry.error_type();
             }
 
@@ -1084,14 +1085,14 @@ namespace Semantic {
                                 lhs_norm = rhs_norm = lhs_t;
                             }
                             if (!is_numeric(lhs_norm) || !is_numeric(rhs_norm)) {
-                                diag.error(0, 0, "arithmetic on non-numeric types: "
+                                diag.error(e.line, e.column, "arithmetic on non-numeric types: "
                                     + registry.name(lhs_t) + " and " + registry.name(rhs_t));
                                 return registry.error_type();
                             }
                             // % только для целых
                             if (n.op == TokenKind::OpPercent &&
                                 (registry.is_float(lhs_norm) || registry.is_float(rhs_norm))) {
-                                diag.error(0, 0, "modulo on float types");
+                                diag.error(e.line, e.column, "modulo on float types");
                                 return registry.error_type();
                             }
                             aast.expr_type[n.lhs.get()] = lhs_t;
@@ -1111,7 +1112,7 @@ namespace Semantic {
                                 { lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
                                   lhs_norm = rhs_norm = lhs_t; }
                             if (!types_compatible(lhs_norm, rhs_norm)) {
-                                diag.error(0, 0, "cannot compare "
+                                diag.error(e.line, e.column, "cannot compare "
                                     + registry.name(lhs_t) + " and " + registry.name(rhs_t));
                                 return registry.error_type();
                             }
@@ -1133,7 +1134,7 @@ namespace Semantic {
                                 { lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
                                   lhs_norm = rhs_norm = lhs_t; }
                             if (!is_numeric(lhs_norm) || !is_numeric(rhs_norm)) {
-                                diag.error(0, 0, "comparison on non-numeric types: "
+                                diag.error(e.line, e.column, "comparison on non-numeric types: "
                                     + registry.name(lhs_t) + " and " + registry.name(rhs_t));
                                 return registry.error_type();
                             }
@@ -1146,13 +1147,13 @@ namespace Semantic {
                         case TokenKind::OpOrOr:
                             if (!registry.equal(lhs_norm, registry.builtin(TokenKind::KwBool)) ||
                                 !registry.equal(rhs_norm, registry.builtin(TokenKind::KwBool))) {
-                                diag.error(0, 0, "logical operator requires bool operands");
+                                diag.error(e.line, e.column, "logical operator requires bool operands");
                                 return registry.error_type();
                             }
                             return registry.builtin(TokenKind::KwBool);
 
                         default:
-                            diag.error(0, 0, "unknown binary operator");
+                            diag.error(e.line, e.column, "unknown binary operator");
                             return registry.error_type();
                     }
                 } else {
@@ -1160,17 +1161,17 @@ namespace Semantic {
                     TypeID rhs_t = check_expr(*n.rhs, std::nullopt);
                     TypeID lhs_t = check_expr(*n.lhs, std::nullopt);
                     if (!is_lvalue(*n.lhs)) {
-                        diag.error(0, 0, "left-hand side of assignment must be an lvalue");
+                        diag.error(e.line, e.column, "left-hand side of assignment must be an lvalue");
                         return registry.error_type();
                     }
                     if (!is_mut_root(*n.lhs)) {
-                        diag.error(0, 0, "cannot assign to immutable variable");
+                        diag.error(e.line, e.column, "cannot assign to immutable variable");
                         return registry.error_type();
                     }
                     TypeID lhs_norm = registry.resolve_alias(lhs_t);
                     TypeID rhs_norm = registry.resolve_alias(rhs_t);
                     if (!types_compatible(lhs_norm, rhs_norm)) {
-                        diag.error(0, 0, "cannot assign " + registry.name(rhs_t)
+                        diag.error(e.line, e.column, "cannot assign " + registry.name(rhs_t)
                             + " to " + registry.name(lhs_t));
                         return registry.error_type();
                     }
@@ -1192,9 +1193,15 @@ namespace Semantic {
                 TypeID src_norm = registry.resolve_alias(src);
                 TypeID dst_norm = registry.resolve_alias(dst);
 
-                auto is_char  = [&](TypeID id) { return registry.equal(id, registry.builtin(TokenKind::KwChar)); };
-                auto is_num   = [&](TypeID id) { return registry.is_fixed_int(id) || registry.is_fixed_float(id); };
-                auto is_un    = [&](TypeID id) { return registry.is_untyped(id); };
+                auto is_char  = [&](TypeID id) {
+                    return registry.equal(id, registry.builtin(TokenKind::KwChar));
+                };
+                auto is_num   = [&](TypeID id) {
+                    return registry.is_fixed_int(id) || registry.is_fixed_float(id);
+                };
+                auto is_un    = [&](TypeID id) {
+                    return registry.is_untyped(id);
+                };
 
                 // char <-> uint32
                 if (is_char(src_norm) && registry.equal(dst_norm, registry.builtin(TokenKind::KwUint32))) {
@@ -1207,7 +1214,7 @@ namespace Semantic {
                 if ((is_num(src_norm) || is_un(src_norm)) && (is_num(dst_norm) || is_un(dst_norm))) {
                     return dst;
                 }
-                diag.error(0, 0, "invalid cast from " + registry.name(src) + " to " + registry.name(dst));
+                diag.error(e.line, e.column, "invalid cast from " + registry.name(src) + " to " + registry.name(dst));
                 return registry.error_type();
             }
 
@@ -1224,7 +1231,7 @@ namespace Semantic {
                     path_segments = path->segments;
                     fn_name = path_segments.back();
                 } else {
-                    diag.error(0, 0, "invalid function call target");
+                    diag.error(e.line, e.column, "invalid function call target");
                     return registry.error_type();
                 }
 
@@ -1234,7 +1241,7 @@ namespace Semantic {
                     for (std::size_t i = 0; i < path_segments.size() - 1; ++i) {
                         Symbol* ns = fn_scope->lookup_chain(path_segments[i]);
                         if (!ns || ns->kind != SymbolKind::Namespace) {
-                            diag.error(0, 0, "unknown namespace '" + std::string(path_segments[i]) + "'");
+                            diag.error(e.line, e.column, "unknown namespace '" + std::string(path_segments[i]) + "'");
                             return registry.error_type();
                         }
                         fn_scope = std::get<NamespaceSymbol>(ns->data).scope;
@@ -1244,7 +1251,7 @@ namespace Semantic {
                 // символ функции
                 Symbol* sym = fn_scope->lookup_chain(fn_name);
                 if (!sym || sym->kind != SymbolKind::Function) {
-                    diag.error(0, 0, "unknown function '" + std::string(fn_name) + "'");
+                    diag.error(e.line, e.column, "unknown function '" + std::string(fn_name) + "'");
                     return registry.error_type();
                 }
 
@@ -1265,7 +1272,7 @@ namespace Semantic {
                         msg += registry.name(arg_types[i]);
                     }
                     msg += ")";
-                    diag.error(0, 0, msg);
+                    diag.error(e.line, e.column, msg);
                     return registry.error_type();
                 }
 
@@ -1288,7 +1295,7 @@ namespace Semantic {
                 TypeID idx_t = check_expr(*n.index, std::nullopt);
                 TypeID arr_norm = registry.resolve_alias(arr_t);
                 if (!registry.is_array(arr_norm)) {
-                    diag.error(0, 0, "cannot index non-array type " + registry.name(arr_t));
+                    diag.error(e.line, e.column, "cannot index non-array type " + registry.name(arr_t));
                     return registry.error_type();
                 }
                 TypeID idx_norm = registry.resolve_alias(idx_t);
@@ -1296,7 +1303,7 @@ namespace Semantic {
                     idx_t = registry.builtin(TokenKind::KwInt32);
                     aast.expr_type[n.index.get()] = idx_t;
                 } else if (!registry.is_fixed_int(idx_norm)) {
-                    diag.error(0, 0, "array index must be integer, got " + registry.name(idx_t));
+                    diag.error(e.line, e.column, "array index must be integer, got " + registry.name(idx_t));
                     return registry.error_type();
                 }
                 return registry.get_array(arr_norm)->elem;
@@ -1307,14 +1314,14 @@ namespace Semantic {
                 TypeID obj_t = check_expr(*n.object, std::nullopt);
                 TypeID obj_norm = registry.resolve_alias(obj_t);
                 if (!registry.is_struct(obj_norm)) {
-                    diag.error(0, 0, "cannot access field of non-struct type " + registry.name(obj_t));
+                    diag.error(e.line, e.column, "cannot access field of non-struct type " + registry.name(obj_t));
                     return registry.error_type();
                 }
                 const auto* st = registry.get_struct(obj_norm);
                 for (const auto& [fname, ftype] : st->fields) {
                     if (fname == n.field) return ftype;
                 }
-                diag.error(0, 0, "unknown field '" + std::string(n.field)
+                diag.error(e.line, e.column, "unknown field '" + std::string(n.field)
                     + "' in struct " + registry.name(obj_t));
                 return registry.error_type();
             }
@@ -1322,7 +1329,7 @@ namespace Semantic {
             // литерал массива [a, b, c]
             if constexpr (std::is_same_v<T, Parser::ArrayLitExpr>) {
                 if (n.elems.empty()) {
-                    diag.error(0, 0, "cannot infer type of empty array literal");
+                    diag.error(e.line, e.column, "cannot infer type of empty array literal");
                     return registry.error_type();
                 }
                 TypeID elem_type = check_expr(n.elems[0], std::nullopt);
@@ -1337,7 +1344,7 @@ namespace Semantic {
                         aast.expr_type[&n.elems[i]] = t;
                     }
                     if (!registry.equal(registry.resolve_alias(t), registry.resolve_alias(elem_type))) {
-                        diag.error(0, 0, "array element type mismatch: expected "
+                        diag.error(e.line, e.column, "array element type mismatch: expected "
                             + registry.name(elem_type) + ", got " + registry.name(t));
                     }
                 }
@@ -1348,7 +1355,7 @@ namespace Semantic {
             if constexpr (std::is_same_v<T, Parser::StructLitExpr>) {
                 Symbol* sym = current_scope->lookup_chain(n.name);
                 if (!sym || sym->kind != SymbolKind::Struct) {
-                    diag.error(0, 0, "unknown struct '" + std::string(n.name) + "'");
+                    diag.error(e.line, e.column, "unknown struct '" + std::string(n.name) + "'");
                     return registry.error_type();
                 }
                 TypeID st_id = std::get<TypeSymbol>(sym->data).id;
@@ -1359,7 +1366,7 @@ namespace Semantic {
                 std::unordered_set<std::string_view> seen;
                 for (const auto& [fname, fexpr] : n.fields) {
                     if (!seen.insert(fname).second) {
-                        diag.error(0, 0, "duplicate field '" + std::string(fname) + "' in struct literal");
+                        diag.error(e.line, e.column, "duplicate field '" + std::string(fname) + "' in struct literal");
                         continue;
                     }
                     // тип поля в структуре
@@ -1369,13 +1376,13 @@ namespace Semantic {
                         if (sfn == fname) { ft = sft; found = true; break; }
                     }
                     if (!found) {
-                        diag.error(0, 0, "unknown field '" + std::string(fname)
+                        diag.error(e.line, e.column, "unknown field '" + std::string(fname)
                             + "' in struct " + std::string(n.name));
                         continue;
                     }
                     TypeID init_t = check_expr(*fexpr, ft);
                     if (!registry.equal(registry.resolve_alias(init_t), registry.resolve_alias(ft))) {
-                        diag.error(0, 0, "field '" + std::string(fname)
+                        diag.error(e.line, e.column, "field '" + std::string(fname)
                             + "' expects " + registry.name(ft)
                             + ", got " + registry.name(init_t));
                     }
@@ -1384,7 +1391,7 @@ namespace Semantic {
                 for (const auto& [sfn, sft] : st->fields) {
                     (void)sft;
                     if (!seen.contains(sfn)) {
-                        diag.error(0, 0, "missing field '" + std::string(sfn)
+                        diag.error(e.line, e.column, "missing field '" + std::string(sfn)
                             + "' in struct literal for " + std::string(n.name));
                     }
                 }
@@ -1417,14 +1424,14 @@ namespace Semantic {
                 }
                 if (expected && !registry.equal(registry.resolve_alias(init_t),
                                                 registry.resolve_alias(*expected))) {
-                    diag.error(0, 0, "type mismatch: variable '" + std::string(n.name)
+                    diag.error(stmt.line, stmt.column, "type mismatch: variable '" + std::string(n.name)
                         + "' expects " + registry.name(*expected)
                         + ", got " + registry.name(init_t));
                 }
                 if (!current_scope->insert(Symbol{
                     SymbolKind::Variable, n.name,
                     VarSymbol{init_t, n.is_mut, 0, 0}})) {
-                    diag.error(0, 0, "duplicate variable '" + std::string(n.name) + "'");
+                    diag.error(stmt.line, stmt.column, "duplicate variable '" + std::string(n.name) + "'");
                 }
                 aast.let_type[&n] = init_t;
             }
@@ -1450,7 +1457,7 @@ namespace Semantic {
                 TypeID cond_t = check_expr(*n.condition, std::nullopt);
                 TypeID cond_norm = registry.resolve_alias(cond_t);
                 if (!registry.equal(cond_norm, registry.builtin(TokenKind::KwBool))) {
-                    diag.error(0, 0, "if condition must be bool, got " + registry.name(cond_t));
+                    diag.error(stmt.line, stmt.column, "if condition must be bool, got " + registry.name(cond_t));
                 }
                 check_stmt(*n.then_body);
                 if (n.else_body) check_stmt(*n.else_body);
@@ -1461,7 +1468,7 @@ namespace Semantic {
                 TypeID cond_t = check_expr(*n.condition, std::nullopt);
                 TypeID cond_norm = registry.resolve_alias(cond_t);
                 if (!registry.equal(cond_norm, registry.builtin(TokenKind::KwBool))) {
-                    diag.error(0, 0, "while condition must be bool, got " + registry.name(cond_t));
+                    diag.error(stmt.line, stmt.column, "while condition must be bool, got " + registry.name(cond_t));
                 }
                 bool old_loop = in_loop;
                 in_loop = true;
@@ -1479,13 +1486,13 @@ namespace Semantic {
                     }
                     if (!registry.equal(registry.resolve_alias(val_t),
                                         registry.resolve_alias(current_return_type))) {
-                        diag.error(0, 0, "return type mismatch: expected "
+                        diag.error(stmt.line, stmt.column, "return type mismatch: expected "
                             + registry.name(current_return_type)
                             + ", got " + registry.name(val_t));
                     }
                 } else {
                     if (!registry.equal(current_return_type, registry.void_type())) {
-                        diag.error(0, 0, "return with no value in non-void function");
+                        diag.error(stmt.line, stmt.column, "return with no value in non-void function");
                     }
                 }
             }
@@ -1493,14 +1500,14 @@ namespace Semantic {
             // break
             else if constexpr (std::is_same_v<T, Parser::BreakStmt>) {
                 if (!in_loop) {
-                    diag.error(0, 0, "break outside loop");
+                    diag.error(stmt.line, stmt.column, "break outside loop");
                 }
             }
 
             // continue
             else if constexpr (std::is_same_v<T, Parser::ContinueStmt>) {
                 if (!in_loop) {
-                    diag.error(0, 0, "continue outside loop");
+                    diag.error(stmt.line, stmt.column, "continue outside loop");
                 }
             }
 

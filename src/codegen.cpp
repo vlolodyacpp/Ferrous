@@ -167,7 +167,7 @@ namespace Codegen {
         ~Impl();
     };
 
-    // TypeRef → TypeID (для codegen, аналог Semantic::resolve_type)
+    // TypeRef → TypeID (для codegen)
     static Semantic::TypeID resolve_typeid(
         const Parser::TypeRef& tr,
         const Semantic::TypeRegistry& types,
@@ -353,11 +353,16 @@ namespace Codegen {
         llvm::Type* i32_ty = llvm::Type::getInt32Ty(c);
         for (const char* pfx : {"print", "println"}) {
             auto d = [&](const std::string& suf, llvm::Type* arg) {
-                decl((std::string("__ferrous_") + pfx + "_" + suf).c_str(),
-                     void_ty, {arg});
+                decl((std::string("__ferrous_") + pfx + "_" + suf).c_str(), void_ty,{arg});
             };
-            d("int8",  i8_ty);   d("int16",  i16_ty); d("int32",  i32_ty); d("int64",  i64_ty);
-            d("uint8", i8_ty);   d("uint16", i16_ty); d("uint32", i32_ty); d("uint64", i64_ty);
+            d("int8",  i8_ty);
+            d("int16",  i16_ty);
+            d("int32",  i32_ty);
+            d("int64",  i64_ty);
+            d("uint8", i8_ty);
+            d("uint16", i16_ty);
+            d("uint32", i32_ty);
+            d("uint64", i64_ty);
             d("float32", llvm::Type::getFloatTy(c));
             d("float64", double_ty);
             d("bool", i8_ty);    // bool передаётся как i8 (ZExt из i1)
@@ -1359,8 +1364,7 @@ namespace Codegen {
 
         ctx = new llvm::LLVMContext();
         mod = new llvm::Module("ferrous_module", *ctx);
-        // triple хоста — иначе clang++ перетирает пустой triple и выдаёт
-        // warning: overriding the module target triple
+        // triple хоста — иначе clang++ перетирает пустой triple
         mod->setTargetTriple(llvm::Triple(llvm::sys::getDefaultTargetTriple()));
         builder = new llvm::IRBuilder<>(*ctx);
 

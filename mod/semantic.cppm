@@ -78,7 +78,8 @@ export namespace Semantic {
         bool is_fixed_float(TypeID) const;       // конкретный float (float32/64)
         bool is_float(TypeID) const;             // любой вещественный (вкл. untyped-float)
 
-        TypeID array(TypeID elem, std::uint64_t size);   // получить/создать тип массива (дедуп)
+        TypeID array(TypeID elem, std::uint64_t size);   // получить/создать тип массива
+
         // поиск уже созданного типа массива без мутации (для codegen на const-реестре)
         std::optional<TypeID> find_array(TypeID elem, std::uint64_t size) const;
 
@@ -99,13 +100,13 @@ export namespace Semantic {
         const std::vector<TypeID>& all_structs() const;  // все структуры (для проверки рекурсии)
 
         TypeID resolve_alias(TypeID) const;   // развернуть цепочку алиасов в конечный тип
-        std::string name(TypeID) const;       // человекочитаемое имя типа (для диагностик/манглинга)
+        std::string name(TypeID) const;       // человекочитаемое имя типа
     private:
-        // встроенный тип (int32, bool, char, …) — несёт свой TokenKind
+        // встроенный тип
         struct Builtin {
             Lexer::TokenKind kind;
         };
-        // нетипизированный литерал до вывода типа (42 / 3.14)
+        // нетипизированный литерал
         struct Untyped {
             enum class Kind { Int, Float };
             Kind kind;
@@ -133,7 +134,7 @@ export namespace Semantic {
         std::vector<TypeEntry> entries;   // все типы; индекс в векторе = TypeID
         std::unordered_map<Lexer::TokenKind, TypeID> by_kind;     // builtin → TypeID
         std::unordered_map<std::string, TypeID> by_name_map;      // имя (struct/alias) → TypeID
-        std::unordered_map<ArrayKey, TypeID, ArrayKeyHash> array_cache; // дедуп типов массивов
+        std::unordered_map<ArrayKey, TypeID, ArrayKeyHash> array_cache; // хэш типов массивов
         std::vector<TypeID> struct_ids;   // id всех структур (для проверки рекурсии)
         TypeID error_id{};                // тип-ошибка (после плохой типизации)
         TypeID void_id{};                 // void
@@ -241,8 +242,8 @@ export namespace Semantic {
         Scope& ensure_namespace(Scope&, std::string_view);  // получить/создать scope
 
 
-        // check_expr: типизирует выражение; expected — «ожидаемый» тип сверху
         TypeID check_expr(const Parser::Expr&, std::optional<TypeID>);
+
         void check_stmt(const Parser::Stmt&);               // проверка инструкции
         bool always_returns(const Parser::Stmt&);           // все пути возвращают значение?
         bool is_lvalue(const Parser::Expr&) const;          // можно ли присваивать?

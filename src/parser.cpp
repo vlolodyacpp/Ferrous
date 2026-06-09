@@ -65,9 +65,15 @@ namespace Parser {
     Lexer::Token Parser::expect(TokenKind k) {
         if (!check(k)) {
             const auto t = peek();
-            report_error(t, std::format("expected token, got `{}`", t.lexeme));
+            Lexer::Token where = t;
+            if (pos > 0) {
+                const auto& prev = tokens[pos - 1];
+                where.line = prev.line;
+                where.column = prev.column + prev.lexeme.size();
+            }
+            report_error(where, std::format("expected token, got `{}`", t.lexeme));
             advance();
-            return Lexer::Token{TokenKind::Eof, "err", t.line, t.column};
+            return Lexer::Token{TokenKind::Eof, "err", where.line, where.column};
         }
         return advance();
     }
@@ -159,7 +165,9 @@ namespace Parser {
         // -x, +x
         if (t.kind == TokenKind::OpMinus || t.kind == TokenKind::OpBang) {
             advance();
+            std::size_t il = peek().line, ic = peek().column;
             auto inner = parse_prefix();
+            if (inner.line == 0) { inner.line = il; inner.column = ic; }
             return parse_postfix(Expr {UnaryExpr{
                 std::make_unique<Expr>(std::move(inner)),
                 t.kind
@@ -337,7 +345,12 @@ namespace Parser {
     }
 
     Expr Parser::parse_expr(int min_prec) {
+        // позиция начала выражения — для диагностики семантики
+        std::size_t start_line = peek().line;
+        std::size_t start_col  = peek().column;
         Expr lhs = parse_prefix();
+        // листовые/постфиксные выражения позицию ещё не получили — проставляем
+        if (lhs.line == 0) { lhs.line = start_line; lhs.column = start_col; }
         while (true) {
             const auto op_kind = peek().kind;
             int prec = get_infix_prec(op_kind);
@@ -349,6 +362,9 @@ namespace Parser {
             advance();
             int next_min = is_right_assoc(op_kind) ? prec : prec + 1;
             Expr rhs = parse_expr(next_min);
+            // позицию lhs нужно запомнить ДО move — бинарное выражение
+            // начинается там же, где его левый операнд
+            std::size_t ll = lhs.line, lc = lhs.column;
             BinaryExpr bin{
                 std::make_unique<Expr>(std::move(lhs)),
                 std::make_unique<Expr>(std::move(rhs)),
@@ -356,41 +372,48 @@ namespace Parser {
                 op_line
             };
             lhs = Expr{std::move(bin)};
+            lhs.line = ll; lhs.column = lc;
         }
         return lhs;
     }
 
 
     Stmt Parser::parse_stmt() {
-        switch (const auto token = peek(); token.kind) {
-            case TokenKind::KwLet:
-                return Stmt {parse_let()};
-            case TokenKind::KwReturn:
-                return Stmt {parse_return()};
-            case TokenKind::KwIf:
-                return Stmt {parse_if()};
-            case TokenKind::KwWhile:
-                return Stmt {parse_while()};
-            case TokenKind::KwBreak:
-                advance();
-                expect(TokenKind::SepSemicolon);
-                return Stmt{BreakStmt {}};
-            case TokenKind::KwContinue:
-                advance();
-                expect(TokenKind::SepSemicolon);
-                return Stmt{ContinueStmt {}};
-            case TokenKind::SepLBrace:
-                return Stmt{parse_block()};
-            case TokenKind::SepSemicolon:
-                advance();
-                return Stmt{NullStmt {}};
-            default:
-                Expr e = parse_expr(0);
-                expect(TokenKind::SepSemicolon);
-                return Stmt{ExprStmt{
-                    std::make_unique<Expr>(std::move(e))
-                }};
-        }
+        const auto token = peek();   // позиция начала инструкции
+        Stmt result = [&]() -> Stmt {
+            switch (peek().kind) {
+                case TokenKind::KwLet:
+                    return Stmt {parse_let()};
+                case TokenKind::KwReturn:
+                    return Stmt {parse_return()};
+                case TokenKind::KwIf:
+                    return Stmt {parse_if()};
+                case TokenKind::KwWhile:
+                    return Stmt {parse_while()};
+                case TokenKind::KwBreak:
+                    advance();
+                    expect(TokenKind::SepSemicolon);
+                    return Stmt{BreakStmt {}};
+                case TokenKind::KwContinue:
+                    advance();
+                    expect(TokenKind::SepSemicolon);
+                    return Stmt{ContinueStmt {}};
+                case TokenKind::SepLBrace:
+                    return Stmt{parse_block()};
+                case TokenKind::SepSemicolon:
+                    advance();
+                    return Stmt{NullStmt {}};
+                default:
+                    Expr e = parse_expr(0);
+                    expect(TokenKind::SepSemicolon);
+                    return Stmt{ExprStmt{
+                        std::make_unique<Expr>(std::move(e))
+                    }};
+            }
+        }();
+        result.line = token.line;
+        result.column = token.column;
+        return result;
     }
 
     LetStmt Parser::parse_let() {
@@ -586,20 +609,26 @@ namespace Parser {
     }
 
     Decl Parser::parse_decl() {
-        switch (auto t = peek(); t.kind) {
-            case TokenKind::KwFn:
-                return Decl{parse_fn()};
-            case TokenKind::KwStruct:
-                return Decl{parse_struct()};
-            case TokenKind::KwType:
-                return Decl{parse_type_alias()};
-            case TokenKind::KwNamespace:
-                return Decl{parse_namespace()};
-            default:
-                std::cerr << "parse error at " << t.line << ":" << t.column << " expected declaration, got `" << t.lexeme << "`" << std::endl;
-                advance();
-                return Decl{FnDecl{}};
-        }
+        const auto t = peek();   // позиция начала объявления
+        Decl result = [&]() -> Decl {
+            switch (peek().kind) {
+                case TokenKind::KwFn:
+                    return Decl{parse_fn()};
+                case TokenKind::KwStruct:
+                    return Decl{parse_struct()};
+                case TokenKind::KwType:
+                    return Decl{parse_type_alias()};
+                case TokenKind::KwNamespace:
+                    return Decl{parse_namespace()};
+                default:
+                    std::cerr << "parse error at " << t.line << ":" << t.column << " expected declaration, got `" << t.lexeme << "`" << std::endl;
+                    advance();
+                    return Decl{FnDecl{}};
+            }
+        }();
+        result.line = t.line;
+        result.column = t.column;
+        return result;
     }
 
     std::vector<Decl> Parser::parse() {

@@ -122,6 +122,8 @@ export namespace Parser {
         std::variant<LitIntExpr, LitFloatExpr, LitBoolExpr, LitStringExpr, LitCharExpr,
         ErrorExpr, PathExpr, IdentExpr, BinaryExpr, UnaryExpr, GroupExpr, CastExpr, CallExpr,
         IndexExpr, FieldExpr, ArrayLitExpr, StructLitExpr> node;
+        std::size_t line = 0;     // позиция выражения в исходнике (для диагностики)
+        std::size_t column = 0;
     };
 
 
@@ -165,6 +167,8 @@ export namespace Parser {
     struct Stmt {
         std::variant<LetStmt, ExprStmt, BlockStmt, IfStmt, WhileStmt,
          ReturnStmt, BreakStmt, ContinueStmt, NullStmt> node;
+        std::size_t line = 0;     // позиция инструкции в исходнике (для диагностики)
+        std::size_t column = 0;
     };
 
 
@@ -192,6 +196,8 @@ export namespace Parser {
 
     struct Decl {
         std::variant<FnDecl, StructDecl, TypeAliasDecl, NameSpaceDecl> node;
+        std::size_t line = 0;
+        std::size_t column = 0;
     };
 
 } // namespace Parser

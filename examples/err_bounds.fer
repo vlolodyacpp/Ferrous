@@ -1,6 +1,6 @@
 fn main() -> int32 {
     let a: [int32; 3] = [1, 2, 3];
     let i: int32 = 5;
-    println(a[i]);
+    println(a[i])
     return 0;
 }
