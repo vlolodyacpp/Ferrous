@@ -355,6 +355,12 @@ namespace Lexer {
         {"&&", TokenKind::OpAndAnd},
         {"||", TokenKind::OpOrOr},
         {"!", TokenKind::OpBang},
+        {"&", TokenKind::OpAmp},
+        {"|", TokenKind::OpPipe},
+        {"^", TokenKind::OpCaret},
+        {"~", TokenKind::OpTilde},
+        {"<<", TokenKind::OpShl},
+        {">>", TokenKind::OpShr},
     };
 
     const std::unordered_map<std::string_view, TokenKind> Lexer::sep = {

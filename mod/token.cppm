@@ -92,6 +92,14 @@ export namespace Lexer {
         OpBang,
 
 
+        OpAmp,    // &  битовое И
+        OpPipe,   // |  битовое ИЛИ
+        OpCaret,  // ^  битовое исключающее ИЛИ (XOR)
+        OpTilde,  // ~  битовое НЕ (унарный)
+        OpShl,    // << сдвиг влево
+        OpShr,    // >> сдвиг вправо
+
+
         //
         Eof,
         Undefined,

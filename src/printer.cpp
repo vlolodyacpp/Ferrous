@@ -80,6 +80,12 @@ namespace Printer {
             case TokenKind::OpAndAnd:      return "OpAndAnd";
             case TokenKind::OpOrOr:        return "OpOrOr";
             case TokenKind::OpBang:        return "OpBang";
+            case TokenKind::OpAmp:         return "OpAmp";
+            case TokenKind::OpPipe:        return "OpPipe";
+            case TokenKind::OpCaret:       return "OpCaret";
+            case TokenKind::OpTilde:       return "OpTilde";
+            case TokenKind::OpShl:         return "OpShl";
+            case TokenKind::OpShr:         return "OpShr";
             case TokenKind::Eof:           return "Eof";
             case TokenKind::Undefined:     return "undefined";
         }
@@ -103,6 +109,12 @@ namespace Printer {
             case TokenKind::OpAndAnd:  return "&&";
             case TokenKind::OpOrOr:    return "||";
             case TokenKind::OpBang:    return "!";
+            case TokenKind::OpAmp:     return "&";
+            case TokenKind::OpPipe:    return "|";
+            case TokenKind::OpCaret:   return "^";
+            case TokenKind::OpTilde:   return "~";
+            case TokenKind::OpShl:     return "<<";
+            case TokenKind::OpShr:     return ">>";
             default:                   return "?";
         }
     }

@@ -656,6 +656,8 @@ namespace Codegen {
         }
         if (n.op == TokenKind::OpBang)
             return B().CreateNot(op, "not");
+        if (n.op == TokenKind::OpTilde)        // битовое НЕ (A.1.8): ~x = инверсия битов
+            return B().CreateNot(op, "bnot");
         return op;
     }
 
@@ -686,6 +688,22 @@ namespace Codegen {
                 B().CreateExtractValue(a, {0u}), B().CreateExtractValue(a, {1u}),
                 B().CreateExtractValue(b, {0u}), B().CreateExtractValue(b, {1u})
             }, "streq");
+        };
+        // беззнаковый ли тип выражения для сдвига
+        auto is_unsigned_t = [&](const Parser::Expr* ex) -> bool {
+            Semantic::TypeID t = expr_tid(ex, types->builtin(TokenKind::KwInt32));
+            for (auto k : { TokenKind::KwUint8, TokenKind::KwUint16,
+                            TokenKind::KwUint32, TokenKind::KwUint64 })
+                if (types->equal(t, types->builtin(k))) return true;
+            return false;
+        };
+        // привести значение сдвига к ширине левого операнда (LLVM требует совпадения)
+        auto match_width = [&](llvm::Value* v, llvm::Type* target) -> llvm::Value* {
+            unsigned vw = v->getType()->getIntegerBitWidth();
+            unsigned tw = target->getIntegerBitWidth();
+            if (vw == tw) return v;
+            return vw < tw ? B().CreateZExt(v, target, "shw")
+                           : B().CreateTrunc(v, target, "shw");
         };
 
         switch (n.op) {
@@ -757,6 +775,20 @@ namespace Codegen {
                 return B().CreateAnd(lhs, rhs, "and");
             case TokenKind::OpOrOr:
                 return B().CreateOr(lhs, rhs, "or");
+
+            case TokenKind::OpAmp:
+                return B().CreateAnd(lhs, rhs, "band");
+            case TokenKind::OpPipe:
+                return B().CreateOr(lhs, rhs, "bor");
+            case TokenKind::OpCaret:
+                return B().CreateXor(lhs, rhs, "bxor");
+            case TokenKind::OpShl:
+                return B().CreateShl(lhs, match_width(rhs, ty), "shl");
+            case TokenKind::OpShr:
+                // знаковый сдвиг hr)
+                return is_unsigned_t(n.lhs.get())
+                    ? B().CreateLShr(lhs, match_width(rhs, ty), "lshr")
+                    : B().CreateAShr(lhs, match_width(rhs, ty), "ashr");
 
             default:
                 return lhs;

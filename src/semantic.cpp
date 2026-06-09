@@ -1037,6 +1037,20 @@ namespace Semantic {
                     }
                     return registry.builtin(TokenKind::KwBool);
                 }
+                // битовое НЕ
+                if (n.op == TokenKind::OpTilde) {
+                    TypeID norm = registry.resolve_alias(inner);
+                    if (registry.is_untyped_int(norm)) {
+                        TypeID def = registry.builtin(TokenKind::KwInt32);
+                        aast.expr_type[n.operand.get()] = def;
+                        return def;
+                    }
+                    if (!registry.is_fixed_int(norm)) {
+                        diag.error(e.line, e.column, "bitwise not requires integer operand, got " + registry.name(inner));
+                        return registry.error_type();
+                    }
+                    return inner;
+                }
                 diag.error(e.line, e.column, "unknown unary operator");
                 return registry.error_type();
             }
@@ -1151,6 +1165,31 @@ namespace Semantic {
                                 return registry.error_type();
                             }
                             return registry.builtin(TokenKind::KwBool);
+
+                        // битовые И/ИЛИ/XOR и сдвиги (A.1.8) — только целые типы
+                        case TokenKind::OpAmp:
+                        case TokenKind::OpPipe:
+                        case TokenKind::OpCaret:
+                        case TokenKind::OpShl:
+                        case TokenKind::OpShr: {
+                            // резолв untyped так же, как в арифметике
+                            if (!registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm)) {
+                                rhs_t = lhs_t; rhs_norm = lhs_norm;
+                            } else if (registry.is_untyped(lhs_norm) && !registry.is_untyped(rhs_norm)) {
+                                lhs_t = rhs_t; lhs_norm = rhs_norm;
+                            } else if (registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm)) {
+                                lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
+                                lhs_norm = rhs_norm = lhs_t;
+                            }
+                            if (!registry.is_fixed_int(lhs_norm) || !registry.is_fixed_int(rhs_norm)) {
+                                diag.error(e.line, e.column, "bitwise operator requires integer operands: "
+                                    + registry.name(lhs_t) + " and " + registry.name(rhs_t));
+                                return registry.error_type();
+                            }
+                            aast.expr_type[n.lhs.get()] = lhs_t;
+                            aast.expr_type[n.rhs.get()] = rhs_t;
+                            return unify_binary(lhs_t, rhs_t);
+                        }
 
                         default:
                             diag.error(e.line, e.column, "unknown binary operator");

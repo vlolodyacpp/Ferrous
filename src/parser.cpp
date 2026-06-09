@@ -87,28 +87,38 @@ namespace Parser {
     // вспомогательные ф-ции для парсинга выражений
 
     int Parser::get_infix_prec(TokenKind kind) {
+        // Чем больше число — тем крепче связывает.
         switch (kind) {
-            case TokenKind::OpEq:
+            case TokenKind::OpEq:        // присваивание — самое слабое (право-ассоц.)
                 return 1;
             case TokenKind::OpOrOr:
                 return 2;
             case TokenKind::OpAndAnd:
                 return 3;
+            case TokenKind::OpPipe:      // |
+                return 4;
+            case TokenKind::OpCaret:     // ^
+                return 5;
+            case TokenKind::OpAmp:       // &
+                return 6;
             case TokenKind::OpEqEq:
             case TokenKind::OpBangEq:
-                return 4;
+                return 7;
             case TokenKind::OpGt:
             case TokenKind::OpLt:
             case TokenKind::OpLtEq:
             case TokenKind::OpGtEq:
-                return 5;
+                return 8;
+            case TokenKind::OpShl:       // << >>
+            case TokenKind::OpShr:
+                return 9;
             case TokenKind::OpPlus:
             case TokenKind::OpMinus:
-                return 6;
+                return 10;
             case TokenKind::OpStar:
             case TokenKind::OpSlash:
             case TokenKind::OpPercent:
-                return 7;
+                return 11;
             default:
                 return 0;
         }
@@ -162,8 +172,9 @@ namespace Parser {
             expect(TokenKind::SepRParen);
             return parse_postfix(Expr {GroupExpr{std::make_unique<Expr>(std::move(inner))}});
         }
-        // -x, +x
-        if (t.kind == TokenKind::OpMinus || t.kind == TokenKind::OpBang) {
+        // -x, !x, ~x  (унарные префиксы; ~ — битовое НЕ, A.1.8)
+        if (t.kind == TokenKind::OpMinus || t.kind == TokenKind::OpBang
+            || t.kind == TokenKind::OpTilde) {
             advance();
             std::size_t il = peek().line, ic = peek().column;
             auto inner = parse_prefix();
