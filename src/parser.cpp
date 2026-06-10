@@ -25,6 +25,29 @@ namespace Parser {
             if (builtin_type.contains(k)) return true;
             return false;
         }
+
+        // человекочитаемая метка ожидаемого токена для диагностики
+        std::string_view token_label(TokenKind k) {
+            switch (k) {
+                case TokenKind::SepSemicolon: return "`;`";
+                case TokenKind::SepColon:     return "`:`";
+                case TokenKind::SepColonColon:return "`::`";
+                case TokenKind::SepComma:     return "`,`";
+                case TokenKind::SepLParen:    return "`(`";
+                case TokenKind::SepRParen:    return "`)`";
+                case TokenKind::SepLBrace:    return "`{`";
+                case TokenKind::SepRBrace:    return "`}`";
+                case TokenKind::SepLBracket:  return "`[`";
+                case TokenKind::SepRBracket:  return "`]`";
+                case TokenKind::OpEq:         return "`=`";
+                case TokenKind::SepArrow:     return "`->`";
+                case TokenKind::Ident:        return "identifier";
+                case TokenKind::LitInt:       return "integer literal";
+                case TokenKind::KwLet:        return "`let`";
+                case TokenKind::KwReturn:     return "`return`";
+                default:                      return "token";
+            }
+        }
     }
 
     // вспомогательные ф-ции
@@ -71,8 +94,10 @@ namespace Parser {
                 where.line = prev.line;
                 where.column = prev.column + prev.lexeme.size();
             }
-            report_error(where, std::format("expected token, got `{}`", t.lexeme));
-            advance();
+            report_error(where, std::format("expected {}, got `{}`", token_label(k), t.lexeme));
+            // НЕ поглощаем токен: иначе пропущенная `;` съедала бы следующий
+            // стейтмент и парсер каскадно сыпал ошибками. Оставляем токен на месте,
+            // чтобы внешний цикл (parse_block/parse) восстановился на его границе.
             return Lexer::Token{TokenKind::Eof, "err", where.line, where.column};
         }
         return advance();
@@ -155,8 +180,7 @@ namespace Parser {
             }};
         }
 
-        std::cerr << "parse error at" << t.line << ":" << t.column <<
-            "expected type, got `" << t.lexeme << "`\n";
+        report_error(t, std::format("expected type, got `{}`", t.lexeme));
         advance();
         return TypeRef{BuiltinTypeRef{TokenKind::Undefined}};
     }
@@ -244,8 +268,7 @@ namespace Parser {
             return Expr{ErrorExpr{t}};
         }
 
-        std::cerr << "parse error at" << t.line << ":" << t.column <<
-            "expected prefix, got `" << t.lexeme << "`\n";
+        report_error(t, std::format("expected expression, got `{}`", t.lexeme));
         advance();
         return Expr{ErrorExpr{t}};
     }
@@ -305,8 +328,7 @@ namespace Parser {
                 } else if (auto* path = std::get_if<PathExpr>(&lhs.node)) {
                     segments = std::move(path->segments);
                 } else {
-                    std::cerr << "parse error at " << peek().line << ":" <<
-                    peek().column << ": '::' applies only to identifiers\n";
+                    report_error(peek(), "'::' applies only to identifiers");
                     return lhs;
                 }
 
@@ -465,7 +487,9 @@ namespace Parser {
         expect(TokenKind::SepLBrace);
         std::vector<Stmt> elems;
         while (!check(TokenKind::SepRBrace) && !is_end()) {
+            const std::size_t before = pos;
             elems.push_back(parse_stmt());
+            if (pos == before) advance();  // страховка от зацикливания при ошибке
         }
         expect(TokenKind::SepRBrace);
         return BlockStmt{std::move(elems)};
@@ -632,7 +656,7 @@ namespace Parser {
                 case TokenKind::KwNamespace:
                     return Decl{parse_namespace()};
                 default:
-                    std::cerr << "parse error at " << t.line << ":" << t.column << " expected declaration, got `" << t.lexeme << "`" << std::endl;
+                    report_error(t, std::format("expected declaration, got `{}`", t.lexeme));
                     advance();
                     return Decl{FnDecl{}};
             }
@@ -645,7 +669,9 @@ namespace Parser {
     std::vector<Decl> Parser::parse() {
         std::vector<Decl> decls;
         while (!is_end()) {
+            const std::size_t before = pos;
             decls.push_back(parse_decl());
+            if (pos == before) advance();  // страховка от зацикливания при ошибке
         }
         return decls;
     }

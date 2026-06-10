@@ -13,7 +13,7 @@ export namespace Codegen {
     public:
         Codegen();
         ~Codegen();
-        void generate(const std::vector<Parser::Decl>& decls,
+        bool generate(const std::vector<Parser::Decl>& decls,
                       const Semantic::AnnotatedAST& aast,
                       const std::string& output_path);
 

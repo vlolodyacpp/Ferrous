@@ -39,6 +39,10 @@ static void put_utf8(std::uint32_t cp) {
 
 extern "C" {
 
+    [[noreturn]] void __ferrous_exit(std::int64_t code) {
+        std::exit(static_cast<int>(code));
+    }
+
     void __ferrous_panic(const char* msg, std::int64_t len, std::int64_t line) {
         std::cerr << "runtime error: "
                   << std::string_view(msg, static_cast<std::size_t>(len))

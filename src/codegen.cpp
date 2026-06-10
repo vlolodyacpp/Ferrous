@@ -30,6 +30,11 @@ module;
 
 module Ferrous.Codegen;
 import Ferrous.Printer;
+
+#ifndef FERROUS_RT_SRC
+#define FERROUS_RT_SRC "rt/ferrous_rt.cpp"
+#endif
+
 namespace Codegen {
 
     using TokenKind = Lexer::TokenKind;
@@ -106,8 +111,8 @@ namespace Codegen {
         std::vector<llvm::BasicBlock*> continue_stack;
         bool cg_in_loop = false;
 
-        // главный вход
-        void generate(const std::vector<Parser::Decl>& decls,
+        // главный вход; false — если кодоген/линковка завершились ошибкой
+        bool generate(const std::vector<Parser::Decl>& decls,
                       const Semantic::AnnotatedAST& aast,
                       const std::string& output_path);
 
@@ -146,6 +151,12 @@ namespace Codegen {
 
         // указатель на lvalue (для присваивания)
         llvm::Value* gen_lvalue_ptr(const Parser::Expr& e);
+
+        // поэлементное сравнение значений типа
+        llvm::Value* gen_value_eq(llvm::Value* a, llvm::Value* b, Semantic::TypeID tid);
+        bool is_string_tid(Semantic::TypeID tid) const {
+            return types->equal(tid, types->builtin(TokenKind::KwString));
+        }
 
         // генерация инструкций
         void gen_stmt(const Parser::Stmt& s);
@@ -202,10 +213,10 @@ namespace Codegen {
 
     Codegen::Codegen() : impl(std::make_unique<Impl>()) {}
     Codegen::~Codegen() = default;
-    void Codegen::generate(const std::vector<Parser::Decl>& decls,
+    bool Codegen::generate(const std::vector<Parser::Decl>& decls,
                            const Semantic::AnnotatedAST& aast,
                            const std::string& output_path) {
-        impl->generate(decls, aast, output_path);
+        return impl->generate(decls, aast, output_path);
     }
 
     // освобождение LLVM-ресурсов
@@ -338,9 +349,10 @@ namespace Codegen {
             function_types[name] = ft;
         };
 
-        // panic + assert
+        // panic + assert + exit
         decl("__ferrous_panic",       void_ty, {i8p_ty, i64_ty, i64_ty});
         decl("__ferrous_assert_fail", void_ty, {i8p_ty, i64_ty, i64_ty});
+        decl("__ferrous_exit",        void_ty, {i64_ty});
 
         // проверки
         decl("__ferrous_div_check",   i64_ty, {i64_ty, i64_ty});
@@ -390,16 +402,8 @@ namespace Codegen {
 
                 std::vector<llvm::Type*> field_types;
                 for (const auto& [fname, ftype] : st->field) {
-                    Semantic::TypeID ftid = std::visit([&](const auto& t) -> Semantic::TypeID {
-                            using T = std::decay_t<decltype(t)>;
-                            if constexpr (std::is_same_v<T, Parser::BuiltinTypeRef>)
-                                return types->builtin(t.type_kind);
-                            if constexpr (std::is_same_v<T, Parser::NamedTypeRef>) {
-                                auto tid = types->by_name(std::string(t.name));
-                                return tid.value_or(types->builtin(TokenKind::KwVoid));
-                            }
-                            return types->builtin(TokenKind::KwVoid);
-                    }, ftype.node);
+                    Semantic::TypeID ftid =
+                        resolve_typeid(ftype, *types, types->builtin(TokenKind::KwVoid));
                     field_types.push_back(to_llvm_type(ftid));
                 }
                 sty->setBody(field_types, false);
@@ -661,6 +665,50 @@ namespace Codegen {
         return op;
     }
 
+    llvm::Value* Codegen::Impl::gen_value_eq(llvm::Value* a, llvm::Value* b,
+                                             Semantic::TypeID tid) {
+        tid = types->resolve_alias(tid);
+        llvm::Type* i1 = llvm::Type::getInt1Ty(C());
+
+        // строка: __ferrous_str_eq(a,b) → i8 (1/0)
+        if (is_string_tid(tid)) {
+            auto fn = llvm::cast<llvm::Function>(functions["__ferrous_str_eq"]);
+            auto ft = llvm::cast<llvm::FunctionType>(function_types["__ferrous_str_eq"]);
+            llvm::Value* eq = B().CreateCall(ft, fn, {
+                B().CreateExtractValue(a, {0u}), B().CreateExtractValue(a, {1u}),
+                B().CreateExtractValue(b, {0u}), B().CreateExtractValue(b, {1u})
+            }, "streq");
+            return B().CreateICmpNE(eq, llvm::ConstantInt::get(eq->getType(), 0), "eq");
+        }
+
+        // структура: конъюнкция сравнений всех полей
+        if (const auto* sty = types->get_struct(tid)) {
+            llvm::Value* acc = llvm::ConstantInt::get(i1, 1);
+            for (unsigned i = 0; i < sty->fields.size(); ++i) {
+                llvm::Value* fa = B().CreateExtractValue(a, {i}, "fa");
+                llvm::Value* fb = B().CreateExtractValue(b, {i}, "fb");
+                acc = B().CreateAnd(acc, gen_value_eq(fa, fb, sty->fields[i].second), "feq");
+            }
+            return acc;
+        }
+
+        // массив: конъюнкция поэлементных сравнений
+        if (const auto* aty = types->get_array(tid)) {
+            llvm::Value* acc = llvm::ConstantInt::get(i1, 1);
+            for (std::uint64_t i = 0; i < aty->size; ++i) {
+                llvm::Value* ea = B().CreateExtractValue(a, {static_cast<unsigned>(i)}, "ea");
+                llvm::Value* eb = B().CreateExtractValue(b, {static_cast<unsigned>(i)}, "eb");
+                acc = B().CreateAnd(acc, gen_value_eq(ea, eb, aty->elem), "eeq");
+            }
+            return acc;
+        }
+
+        // скаляр
+        if (a->getType()->isFloatingPointTy())
+            return B().CreateFCmpOEQ(a, b, "eq");
+        return B().CreateICmpEQ(a, b, "eq");
+    }
+
     // бинарные операторы: арифметика, сравнения, логика, присваивание, строки
     llvm::Value* Codegen::Impl::gen_binary(const Parser::BinaryExpr& n) {
         // присваивание
@@ -675,6 +723,8 @@ namespace Codegen {
         llvm::Value* rhs = gen_expr(*n.rhs);
         llvm::Type* ty = lhs->getType();
         bool is_float = ty->isFloatingPointTy();
+        // тип левого операнда из аннотаций — единый источник правды о string/struct/array
+        Semantic::TypeID lhs_tid = expr_tid(n.lhs.get(), types->builtin(TokenKind::KwInt32));
 
         auto call_rt = [&](const char* name, std::vector<llvm::Value*> a,
                            const char* lbl) -> llvm::Value* {
@@ -682,14 +732,7 @@ namespace Codegen {
             auto ft = llvm::cast<llvm::FunctionType>(function_types[name]);
             return B().CreateCall(ft, fn, a, lbl);
         };
-        // сравнение строк: распаковываем {ptr,len} обоих и зовём runtime → i8
-        auto str_eq = [&](llvm::Value* a, llvm::Value* b) -> llvm::Value* {
-            return call_rt("__ferrous_str_eq", {
-                B().CreateExtractValue(a, {0u}), B().CreateExtractValue(a, {1u}),
-                B().CreateExtractValue(b, {0u}), B().CreateExtractValue(b, {1u})
-            }, "streq");
-        };
-        // беззнаковый ли тип выражения для сдвига
+        // беззнаковый ли тип выражения
         auto is_unsigned_t = [&](const Parser::Expr* ex) -> bool {
             Semantic::TypeID t = expr_tid(ex, types->builtin(TokenKind::KwInt32));
             for (auto k : { TokenKind::KwUint8, TokenKind::KwUint16,
@@ -697,6 +740,7 @@ namespace Codegen {
                 if (types->equal(t, types->builtin(k))) return true;
             return false;
         };
+        const bool is_unsigned = is_unsigned_t(n.lhs.get());
         // привести значение сдвига к ширине левого операнда (LLVM требует совпадения)
         auto match_width = [&](llvm::Value* v, llvm::Type* target) -> llvm::Value* {
             unsigned vw = v->getType()->getIntegerBitWidth();
@@ -708,8 +752,8 @@ namespace Codegen {
 
         switch (n.op) {
             case TokenKind::OpPlus: {
-                // строковая конкатенация
-                if (ty->isStructTy()) {
+                // строковая конкатенация (определяем строку по TypeID, не по LLVM-типу)
+                if (is_string_tid(lhs_tid)) {
                     llvm::Value* a_ptr = B().CreateExtractValue(lhs, {0u}, "a.ptr");
                     llvm::Value* a_len = B().CreateExtractValue(lhs, {1u}, "a.len");
                     llvm::Value* b_ptr = B().CreateExtractValue(rhs, {0u}, "b.ptr");
@@ -730,46 +774,50 @@ namespace Codegen {
                 if (is_float) return B().CreateFDiv(lhs, rhs, "div");
                 llvm::Value* line = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), n.line);
                 llvm::Value* d64 = rhs->getType()->getIntegerBitWidth() < 64
-                    ? B().CreateSExt(rhs, llvm::Type::getInt64Ty(C()), "d64") : rhs;
+                    ? (is_unsigned ? B().CreateZExt(rhs, llvm::Type::getInt64Ty(C()), "d64")
+                                   : B().CreateSExt(rhs, llvm::Type::getInt64Ty(C()), "d64"))
+                    : rhs;
                 call_rt("__ferrous_div_check", {d64, line}, "div_check");
-                return B().CreateSDiv(lhs, rhs, "div");
+                return is_unsigned ? B().CreateUDiv(lhs, rhs, "div")
+                                   : B().CreateSDiv(lhs, rhs, "div");
             }
             case TokenKind::OpPercent: {
                 llvm::Value* line = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), n.line);
                 llvm::Value* d64 = rhs->getType()->getIntegerBitWidth() < 64
-                    ? B().CreateSExt(rhs, llvm::Type::getInt64Ty(C()), "d64") : rhs;
+                    ? (is_unsigned ? B().CreateZExt(rhs, llvm::Type::getInt64Ty(C()), "d64")
+                                   : B().CreateSExt(rhs, llvm::Type::getInt64Ty(C()), "d64"))
+                    : rhs;
                 call_rt("__ferrous_mod_check", {d64, line}, "mod_check");
-                return B().CreateSRem(lhs, rhs, "rem");
+                return is_unsigned ? B().CreateURem(lhs, rhs, "rem")
+                                   : B().CreateSRem(lhs, rhs, "rem");
             }
 
             case TokenKind::OpEqEq:
-                if (ty->isStructTy()) {  // строки: __ferrous_str_eq(a,b) → i8 (1/0)
-                    llvm::Value* eq = str_eq(lhs, rhs);
-                    return B().CreateICmpNE(eq,
-                        llvm::ConstantInt::get(eq->getType(), 0), "eq");
-                }
+                if (is_string_tid(lhs_tid) || types->is_struct(lhs_tid) || types->is_array(lhs_tid))
+                    return gen_value_eq(lhs, rhs, lhs_tid);
                 return is_float ? B().CreateFCmpOEQ(lhs, rhs, "eq")
                                            : B().CreateICmpEQ(lhs, rhs, "eq");
             case TokenKind::OpBangEq:
-                if (ty->isStructTy()) {  // строки: инверсия str_eq
-                    llvm::Value* eq = str_eq(lhs, rhs);
-                    return B().CreateICmpEQ(eq,
-                        llvm::ConstantInt::get(eq->getType(), 0), "ne");
-                }
+                if (is_string_tid(lhs_tid) || types->is_struct(lhs_tid) || types->is_array(lhs_tid))
+                    return B().CreateNot(gen_value_eq(lhs, rhs, lhs_tid), "ne");
                 return is_float ? B().CreateFCmpONE(lhs, rhs, "ne")
                                            : B().CreateICmpNE(lhs, rhs, "ne");
             case TokenKind::OpLt:
                 return is_float ? B().CreateFCmpOLT(lhs, rhs, "lt")
-                                           : B().CreateICmpSLT(lhs, rhs, "lt");
+                       : is_unsigned ? B().CreateICmpULT(lhs, rhs, "lt")
+                                     : B().CreateICmpSLT(lhs, rhs, "lt");
             case TokenKind::OpLtEq:
                 return is_float ? B().CreateFCmpOLE(lhs, rhs, "le")
-                                           : B().CreateICmpSLE(lhs, rhs, "le");
+                       : is_unsigned ? B().CreateICmpULE(lhs, rhs, "le")
+                                     : B().CreateICmpSLE(lhs, rhs, "le");
             case TokenKind::OpGt:
                 return is_float ? B().CreateFCmpOGT(lhs, rhs, "gt")
-                                           : B().CreateICmpSGT(lhs, rhs, "gt");
+                       : is_unsigned ? B().CreateICmpUGT(lhs, rhs, "gt")
+                                     : B().CreateICmpSGT(lhs, rhs, "gt");
             case TokenKind::OpGtEq:
                 return is_float ? B().CreateFCmpOGE(lhs, rhs, "ge")
-                                           : B().CreateICmpSGE(lhs, rhs, "ge");
+                       : is_unsigned ? B().CreateICmpUGE(lhs, rhs, "ge")
+                                     : B().CreateICmpSGE(lhs, rhs, "ge");
 
             case TokenKind::OpAndAnd:
                 return B().CreateAnd(lhs, rhs, "and");
@@ -1255,12 +1303,12 @@ namespace Codegen {
         }
 
         if (name == "exit") {
-            if (av.empty()) return nullptr;
-            llvm::Value* promoted = av[0];
-            if (promoted->getType()->getIntegerBitWidth() < 64)
-                promoted = B().CreateSExt(promoted, llvm::Type::getInt64Ty(C()), "code");
-            B().CreateRet(promoted);
-            return promoted;
+            if (av.empty()) return i32_zero();
+            llvm::Value* code = av[0];
+            if (code->getType()->getIntegerBitWidth() < 64)
+                code = B().CreateSExt(code, llvm::Type::getInt64Ty(C()), "code");
+            call_rt("__ferrous_exit", {code});
+            return i32_zero();
         }
 
         if (name == "panic") {
@@ -1384,11 +1432,9 @@ namespace Codegen {
     void Codegen::Impl::define_functions(const std::vector<Parser::Decl>& decls) {
         define_functions_rec(decls);
     }
-
-    // ── generate: главный метод ───────────────────────────────────────
-
+    
     // основной метод: declare → define → verify → запись .ll → clang++ → executable
-    void Codegen::Impl::generate(const std::vector<Parser::Decl>& decls,
+    bool Codegen::Impl::generate(const std::vector<Parser::Decl>& decls,
                            const Semantic::AnnotatedAST& aast,
                            const std::string& output_path) {
         this->aast = &aast;
@@ -1415,7 +1461,7 @@ namespace Codegen {
         llvm::raw_string_ostream vfy_os(vfy_err);
         if (llvm::verifyModule(M(), &vfy_os)) {
             std::cerr << "LLVM verification error:\n" << vfy_err << '\n';
-            return;
+            return false;
         }
 
         // запись .ll
@@ -1424,22 +1470,28 @@ namespace Codegen {
         llvm::raw_fd_ostream ll_out(ll_path, ec);
         if (ec) {
             std::cerr << "cannot write " << ll_path << ": " << ec.message() << '\n';
-            return;
+            return false;
         }
         M().print(ll_out, nullptr);
         ll_out.flush();
 
-        // компиляция рантайма + линковка исполняемого файла
+        // компиляция рантайма + линковка исполняемого файла.
         std::string rt_o = output_path + ".rt.o";
-        std::string cmd_rt = "clang++ -std=c++23 -c rt/ferrous_rt.cpp -o " + rt_o;
+        std::string cmd_rt =
+            std::string("clang++ -std=c++23 -c ") + FERROUS_RT_SRC + " -o " + rt_o;
         int ret_rt = std::system(cmd_rt.c_str());
-        if (ret_rt != 0)
+        if (ret_rt != 0) {
             std::cerr << "runtime compilation failed (exit " << ret_rt << ")\n";
+            return false;
+        }
 
         std::string cmd = "clang++ -O1 " + ll_path + " " + rt_o + " -o " + output_path;
         int ret = std::system(cmd.c_str());
-        if (ret != 0)
+        if (ret != 0) {
             std::cerr << "linking failed (exit code " << ret << "): " << cmd << "\n";
+            return false;
+        }
+        return true;
     }
 
 } // namespace Codegen

@@ -2,6 +2,7 @@ module;
 #include <cctype>
 #include <cstddef>
 #include <iostream>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -217,18 +218,13 @@ namespace Lexer {
 
         // если на этом этапе оказались в конце, значит не закрыли
         if (is_end()) {
-            std::cerr << "unterminated str literal\n";
+            diag.error(start_line, start_column, "unterminated string literal");
             return Token{TokenKind::Undefined, "err", start_line, start_column};
         }
 
-        if (peek() == quote) {
-            const std::string_view lexeme = source.substr(start_lexeme, pos - start_lexeme);
-            advance(); // пропускаем вторую кавычку
-            return Token{TokenKind::LitString, lexeme, start_line, start_column};
-        }
-
-        std::cerr << "кавычки не одинаковые\n";
-        return Token{TokenKind::Undefined, "err", start_line, start_column};
+        const std::string_view lexeme = source.substr(start_lexeme, pos - start_lexeme);
+        advance(); // пропускаем вторую кавычку
+        return Token{TokenKind::LitString, lexeme, start_line, start_column};
     }
 
     Token Lexer::lex_op_or_sep() {
@@ -264,7 +260,12 @@ namespace Lexer {
             }
         }
 
-        return Token{TokenKind::Undefined, "undefined",  start_line, start_column};
+        // нераспознанный символ: сообщаем с позицией и обязательно сдвигаемся,
+        const std::string_view bad = source.substr(pos, 1);
+        diag.error(start_line, start_column,
+                   "unexpected character '" + std::string(bad) + "'");
+        advance();
+        return Token{TokenKind::Undefined, "undefined", start_line, start_column};
     }
 
     std::vector<Token> Lexer::tokenize() {

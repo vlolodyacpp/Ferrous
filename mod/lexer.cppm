@@ -7,12 +7,14 @@ module;
 
 export module Ferrous.Lexer;
 export import Ferrous.Token;
+import Ferrous.Semantic;
 
 export namespace Lexer {
 
     class Lexer {
     public:
-        explicit Lexer(const std::string_view str) : source(str), pos(0), len(str.length()), line(1), column(1){}
+        Lexer(const std::string_view str, Semantic::DiagBag& diag)
+            : source(str), pos(0), len(str.length()), line(1), column(1), diag(diag) {}
         std::vector<Token> tokenize();
     private:
 
@@ -40,5 +42,7 @@ export namespace Lexer {
 
         std::size_t line; // для отладки ошибок
         std::size_t column;
+
+        Semantic::DiagBag& diag;
     };
 } // namespace Lexer

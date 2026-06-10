@@ -58,7 +58,8 @@ int main(int argc, char **argv) {
     ss << in.rdbuf();
     std::string source = ss.str();
 
-    Lexer::Lexer lex(source);
+    Semantic::DiagBag bag;
+    Lexer::Lexer lex(source, bag);
     auto tokens = lex.tokenize();
 
     if (dump_tokens) {
@@ -66,21 +67,27 @@ int main(int argc, char **argv) {
             std::cout << t.line << ':' << t.column << '\t'
                       << Printer::kind_name(t.kind) << "\t'" << t.lexeme << "'\n";
         }
+        if (bag.has_errors()) {
+            Semantic::print_diagnostics(bag, path, std::cerr);
+            return 1;
+        }
         return 0;
     }
 
     if (dump_ast) {
-        Semantic::DiagBag bag;
         Parser::Parser p(std::move(tokens), bag);
         auto decls = p.parse();
         for (const auto& decl : decls) {
             Printer::print_decl(decl, std::cout, 0);
         }
+        if (bag.has_errors()) {
+            Semantic::print_diagnostics(bag, path, std::cerr);
+            return 1;
+        }
         return 0;
     }
 
     if (dump_sema) {
-        Semantic::DiagBag bag;
         Parser::Parser p(std::move(tokens), bag);
         auto decls = p.parse();
         Semantic::Semantic sema;
@@ -93,7 +100,12 @@ int main(int argc, char **argv) {
         return bag.has_errors() ? 1 : 0;
     }
 
-    Semantic::DiagBag bag;
+    // ошибки лексера (если есть) — прекращаем до разбора
+    if (bag.has_errors()) {
+        Semantic::print_diagnostics(bag, path, std::cerr);
+        return 1;
+    }
+
     Parser::Parser p(std::move(tokens), bag);
     auto decls = p.parse();
 
@@ -117,6 +129,6 @@ int main(int argc, char **argv) {
 
 
     Codegen::Codegen cg;
-    cg.generate(decls, sema.aast, output_path);
-    return 0;
+    bool ok = cg.generate(decls, sema.aast, output_path);
+    return ok ? 0 : 1;
 }

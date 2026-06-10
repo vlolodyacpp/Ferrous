@@ -821,36 +821,44 @@ namespace Semantic {
         std::vector<TypeID> resolved_args;
     };
 
-    // поиск перегрузки по типам аргументов
+    // поиск перегрузки по типам аргументов.
     static std::optional<OverloadMatch> resolve_overload(
         const std::vector<FuncSig>& overloads,
         const std::vector<TypeID>& arg_types,
         TypeRegistry& registry)
     {
+        std::optional<OverloadMatch> best;
+        int best_cost = 0;
         for (std::size_t i = 0; i < overloads.size(); ++i) {
             const auto& sig = overloads[i];
             if (sig.params.size() != arg_types.size()) continue;
             bool match = true;
+            int cost = 0;
             std::vector<TypeID> resolved = arg_types;
             for (std::size_t j = 0; j < sig.params.size(); ++j) {
                 TypeID param = registry.resolve_alias(sig.params[j]);
                 TypeID arg   = registry.resolve_alias(arg_types[j]);
-                if (registry.equal(param, arg)) continue;
+                if (registry.equal(param, arg)) continue;  // точное — стоимость 0
                 // неявное приведение нетипизированного литерала
                 if (registry.is_untyped_int(arg) && registry.is_fixed_int(param)) {
                     resolved[j] = param;
+                    cost += registry.equal(param, registry.builtin(TokenKind::KwInt32)) ? 1 : 2;
                     continue;
                 }
                 if (registry.is_untyped_float(arg) && registry.is_fixed_float(param)) {
                     resolved[j] = param;
+                    cost += registry.equal(param, registry.builtin(TokenKind::KwFloat64)) ? 1 : 2;
                     continue;
                 }
                 match = false;
                 break;
             }
-            if (match) return OverloadMatch{i, std::move(resolved)};
+            if (match && (!best || cost < best_cost)) {
+                best_cost = cost;
+                best = OverloadMatch{i, std::move(resolved)};
+            }
         }
-        return std::nullopt;
+        return best;
     }
 
     // проверка выражений
