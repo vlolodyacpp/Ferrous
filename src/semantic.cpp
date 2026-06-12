@@ -20,6 +20,33 @@ namespace Semantic {
 
     using TokenKind = Lexer::TokenKind;
 
+    // декодер escape для строковых и символьных литералов.
+    std::optional<std::string> decode_escapes(std::string_view raw, char* bad) {
+        std::string out;
+        out.reserve(raw.size());
+        for (std::size_t i = 0; i < raw.size(); ++i) {
+            const char c = raw[i];
+            if (c != '\\') { out.push_back(c); continue; }
+            if (i + 1 >= raw.size()) {           // одинокий '\' в конце
+                if (bad) *bad = '\0';
+                return std::nullopt;
+            }
+            switch (const char esc = raw[++i]) {
+                case 'n':  out.push_back('\n'); break;
+                case 't':  out.push_back('\t'); break;
+                case 'r':  out.push_back('\r'); break;
+                case '\\': out.push_back('\\'); break;
+                case '\'': out.push_back('\''); break;
+                case '"':  out.push_back('"');  break;
+                case '0':  out.push_back('\0'); break;
+                default:
+                    if (bad) *bad = esc;
+                    return std::nullopt;
+            }
+        }
+        return out;
+    }
+
     namespace {
         // хэш для TypeID
         struct TypeIdHash {
@@ -316,24 +343,52 @@ namespace Semantic {
         TypeID id{static_cast<std::uint32_t>(entries.size())};
         entries.emplace_back(AliasType{std::string(name), error_id, false});
         by_name_map.emplace(std::string(name), id);
+        alias_ids.push_back(id);
         return id;
     }
 
-    // регистрация цели псевдонима
+    // регистрация цели псевдонима.
     void TypeRegistry::register_alias(std::string_view name, TypeID target) {
         auto it = by_name_map.find(std::string(name));
         if (it == by_name_map.end()) {
             TypeID id{static_cast<std::uint32_t>(entries.size())};
-            entries.emplace_back(AliasType{std::string(name), normalize(target), true});
+            entries.emplace_back(AliasType{std::string(name), target, true});
             by_name_map.emplace(std::string(name), id);
+            alias_ids.push_back(id);
             return;
         }
         auto* alias = std::get_if<AliasType>(&entries[it->second.id]);
         if (!alias) {
             return;
         }
-        alias->target = normalize(target);
+        alias->target = target;
         alias->resolved = true;
+    }
+
+    const std::vector<TypeID>& TypeRegistry::all_aliases() const {
+        return alias_ids;
+    }
+
+    bool TypeRegistry::is_alias(TypeID id) const {
+        if (id.id >= entries.size()) return false;
+        return std::holds_alternative<AliasType>(entries[id.id]);
+    }
+
+    // сырая цель алиаса; nullopt — если это не resolved-алиас
+    std::optional<TypeID> TypeRegistry::alias_target(TypeID id) const {
+        if (id.id >= entries.size()) return std::nullopt;
+        const auto* alias = std::get_if<AliasType>(&entries[id.id]);
+        if (!alias || !alias->resolved) return std::nullopt;
+        return alias->target;
+    }
+
+    // разорвать алиас, входящий в цикл: цель → error, resolved=false,
+    void TypeRegistry::mark_alias_error(TypeID id) {
+        if (id.id >= entries.size()) return;
+        if (auto* alias = std::get_if<AliasType>(&entries[id.id])) {
+            alias->target = error_id;
+            alias->resolved = false;
+        }
     }
 
     // поиск типа по имени
@@ -591,6 +646,7 @@ namespace Semantic {
                     continue;
                 }
                 TypeID id = registry.struct_placeholder(st -> name);
+                decl_pos[id.id] = {d.line, d.column};
                 if (!scope.insert(Symbol{SymbolKind::Struct, st -> name, TypeSymbol{id}})) {
                     diag.error(d.line, d.column, "'" + std::string(st -> name) + "' already declared");
                 }
@@ -600,6 +656,7 @@ namespace Semantic {
                     continue;
                 }
                 TypeID id = registry.declare_alias(ta -> name);
+                decl_pos[id.id] = {d.line, d.column};
                 if (!scope.insert(Symbol{SymbolKind::TypeAllias, ta -> name, TypeSymbol{id}})) {
                     diag.error(d.line, d.column, "'" + std::string(ta -> name) + "' already declared");
                 }
@@ -616,6 +673,9 @@ namespace Semantic {
                 }
             }
         }
+
+        // циклы синонимов разрываем до резолва полей структур
+        verify_alias_cycles();
 
         // подпроход 3: поля структур
         for (const auto& d : decls) {
@@ -674,9 +734,50 @@ namespace Semantic {
             std::unordered_set<TypeID, TypeIdHash> stack;
             if (has_value_cycle(tid, has_value_cycle, stack)) {
                 if (const auto* st = registry.get_struct(tid)) {
-                    diag.error(0, 0, "recursive struct '" + st -> name + "' has infinite size");
+                    auto pos = decl_pos.find(tid.id);
+                    auto [ln, col] = pos != decl_pos.end()
+                        ? pos->second : std::pair<std::size_t, std::size_t>{1, 1};
+                    diag.error(ln, col, "recursive struct '" + st -> name + "' has infinite size");
                 }
             }
+        }
+    }
+
+    // проверка циклов синонимов типов 
+    void Semantic::verify_alias_cycles() {
+        std::unordered_set<TypeID, TypeIdHash> done;   // уже учтённые члены циклов
+        for (TypeID start : registry.all_aliases()) {
+            if (done.contains(start)) continue;
+
+            // идём по цепочке target, пока это resolved-алиасы и нет повтора
+            std::vector<TypeID> path;
+            std::unordered_set<TypeID, TypeIdHash> on_path;
+            TypeID cur = start;
+            while (registry.is_alias(cur) && !on_path.contains(cur)) {
+                on_path.insert(cur);
+                path.push_back(cur);
+                auto nxt = registry.alias_target(cur);
+                if (!nxt) break;          // нерезолвнутая цель — не цикл
+                cur = *nxt;
+            }
+            // цикл: вернулись на узел, уже лежащий в пути
+            if (!registry.is_alias(cur) || !on_path.contains(cur)) continue;
+
+            std::size_t cyc_start = 0;
+            while (path[cyc_start] != cur) ++cyc_start;
+
+            std::string chain;
+            for (std::size_t i = cyc_start; i < path.size(); ++i) {
+                chain += registry.name(path[i]) + " -> ";
+                done.insert(path[i]);
+                registry.mark_alias_error(path[i]);   // разорвать, чтобы не было каскада
+            }
+            chain += registry.name(cur);              // замкнуть цепочку
+
+            auto pos = decl_pos.find(cur.id);
+            auto [ln, col] = pos != decl_pos.end()
+                ? pos->second : std::pair<std::size_t, std::size_t>{1, 1};
+            diag.error(ln, col, "type alias cycle: " + chain);
         }
     }
 
@@ -991,37 +1092,28 @@ namespace Semantic {
 
             // строковый литерал
             if constexpr (std::is_same_v<T, Parser::LitStringExpr>) {
+                char bad = 0;
+                if (!decode_escapes(n.value, &bad)) {
+                    diag.error(e.line, e.column, "unknown escape sequence '\\"
+                        + std::string(1, bad) + "' in string literal");
+                    return registry.error_type();
+                }
                 return registry.builtin(TokenKind::KwString);
             }
 
             // символьный литерал
             if constexpr (std::is_same_v<T, Parser::LitCharExpr>) {
-                std::string_view raw = n.value;
-                std::uint32_t codepoint = 0;
-
-                if (raw.size() >= 2 && raw[0] == '\\') {
-                    // escape-последовательность
-                    if (raw == "\\n")      codepoint = 0x0A;
-                    else if (raw == "\\t") codepoint = 0x09;
-                    else if (raw == "\\r") codepoint = 0x0D;
-                    else if (raw == "\\\\") codepoint = '\\';
-                    else if (raw == "\\'") codepoint = '\'';
-                    else if (raw == "\\\"") codepoint = '"';
-                    else if (raw == "\\0") codepoint = 0x00;
-                    else {
-                        diag.error(e.line, e.column, "unknown escape sequence '\\"
-                            + std::string(raw.substr(1)) + "'");
-                        return registry.error_type();
-                    }
-                } else if (raw.size() == 1) {
-                    codepoint = static_cast<std::uint8_t>(raw[0]);
-                } else {
-                    diag.error(e.line, e.column, "invalid char literal");
+                char bad = 0;
+                std::optional<std::string> decoded = decode_escapes(n.value, &bad);
+                if (!decoded) {
+                    diag.error(e.line, e.column, "unknown escape sequence '\\"
+                        + std::string(1, bad) + "' in char literal");
                     return registry.error_type();
                 }
-
-                if (codepoint > 0x10FFFF) {
-                    diag.error(e.line, e.column, "char codepoint out of range");
+                // ровно один символ/escape после декода
+                if (decoded->size() != 1) {
+                    diag.error(e.line, e.column, "char literal must contain exactly one character");
+                    return registry.error_type();
                 }
                 return registry.builtin(TokenKind::KwChar);
             }

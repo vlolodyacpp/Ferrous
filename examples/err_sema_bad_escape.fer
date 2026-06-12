@@ -1,0 +1,5 @@
+// @error: unknown escape
+fn main() -> int32 {
+    println("\q");
+    return 0;
+}

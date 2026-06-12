@@ -22,12 +22,18 @@ for f in "$EX"/test_*.fer; do
     if ! "$FER" "$f" -o "$TMP/prog" >"$TMP/out" 2>&1; then
         bad "$name" "ошибка компиляции: $(head -1 "$TMP/out")"; continue
     fi
-    if "$TMP/prog" >/dev/null 2>&1; then ok "$name"; else
-        bad "$name" "ненулевой код выполнения ($?)"; fi
+    if ! "$TMP/prog" >"$TMP/run" 2>&1; then
+        bad "$name" "ненулевой код выполнения ($?)"; continue
+    fi
+    # если рядом лежит .expected — сверяем stdout дословно
+    if [ -f "${f%.fer}.expected" ] && ! diff -q "${f%.fer}.expected" "$TMP/run" >/dev/null; then
+        bad "$name" "вывод не совпал с эталоном"; continue
+    fi
+    ok "$name"
 done
 
 echo "== ошибки компиляции (ожидаем код 1 + совпадение маркера @error) =="
-for f in "$EX"/err_sema_*.fer; do
+for f in "$EX"/err_sema_*.fer "$EX"/err_lex_*.fer; do
     name=$(basename "$f")
     want=$(sed -n 's|^// @error:[[:space:]]*||p' "$f" | head -1)
     "$FER" "$f" -o "$TMP/prog" >"$TMP/out" 2>&1
@@ -43,7 +49,7 @@ done
 
 echo "== рантайм-ошибки (компиляция ок, запуск даёт код 1) =="
 for f in "$EX"/err_*.fer; do
-    case "$(basename "$f")" in err_sema_*) continue;; esac
+    case "$(basename "$f")" in err_sema_*|err_lex_*) continue;; esac
     name=$(basename "$f")
     if ! "$FER" "$f" -o "$TMP/prog" >"$TMP/out" 2>&1; then
         bad "$name" "не должна падать на компиляции: $(head -1 "$TMP/out")"; continue

@@ -1,7 +1,6 @@
 module;
 #include <cctype>
 #include <cstddef>
-#include <iostream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -49,6 +48,8 @@ namespace Lexer {
             } else if (peek() == '/' && peek_next() == '/') {
                 while (peek() != '\n' && !is_end()) advance();
             } else if (peek() == '/' && peek_next() == '*') {
+                const std::size_t c_line = line;     // позиция открывающего /*
+                const std::size_t c_col = column;
                 advance();                       // '/'
                 advance();                       // '*'
                 int depth = 1;                   // вложенности: /* /* */ */
@@ -61,7 +62,10 @@ namespace Lexer {
                         advance();
                     }
                 }
-                // depth>0 при is_end — незакрытый комментарий; просто выходим
+                if (depth > 0) {                 // обрыв файла внутри комментария
+                    diag.error(c_line, c_col, "unterminated block comment");
+                    return;
+                }
 
             } else {
                 break;
@@ -128,7 +132,8 @@ namespace Lexer {
                 advance();
             }
             if (!std::isdigit(peek())) {
-                std::cerr << "invalid float literal: expected digit after exponent\n";
+                diag.error(start_line, start_column,
+                           "invalid float literal: expected digit after exponent");
                 return Token{TokenKind::Undefined, "err", start_line, start_column};
             }
             while (std::isdigit(peek())) advance();
@@ -141,7 +146,8 @@ namespace Lexer {
 
             if (const std::string_view suffix = source.substr(start_suf, pos - start_suf);
                 !suf.contains(suffix)) {
-                std::cerr << "invalid suffix: " << suffix;
+                diag.error(start_line, start_column,
+                           "invalid suffix: " + std::string(suffix));
                 return Token{TokenKind::Undefined, "suffix", start_line, start_column};
             }
         }
@@ -159,14 +165,14 @@ namespace Lexer {
         const std::size_t start_pos = pos;
 
         if (peek() == '\0' || peek() == '\n') {
-            std::cerr << "unterminated char literal\n";
+            diag.error(start_line, start_column, "unterminated char literal");
             return Token{TokenKind::Undefined, "err", start_line, start_column};
         }
 
         // пустой char
         if (peek() == '\'') {
             advance();
-            std::cerr << "empty char literal\n";
+            diag.error(start_line, start_column, "empty char literal");
             return Token{TokenKind::Undefined, "err", start_line, start_column};
         }
 
@@ -174,7 +180,7 @@ namespace Lexer {
         if (peek() == '\\') {
             advance();
             if (peek() == '\0' || peek() == '\n') {
-                std::cerr << "unterminated char literal\n";
+                diag.error(start_line, start_column, "unterminated char literal");
                 return Token{TokenKind::Undefined, "err", start_line, start_column};
             }
             advance();
@@ -190,10 +196,10 @@ namespace Lexer {
             }
             if (peek() == '\'') {
                 advance();
-                std::cerr << "char literal too long\n";
+                diag.error(start_line, start_column, "char literal too long");
                 return Token{TokenKind::Undefined, "err", start_line, start_column};
             }
-            std::cerr << "unterminated char literal\n";
+            diag.error(start_line, start_column, "unterminated char literal");
             return Token{TokenKind::Undefined, "err", start_line, start_column};
         }
 
@@ -212,12 +218,18 @@ namespace Lexer {
         advance();
         const std::size_t start_lexeme = pos;
 
-        while (!is_end() && peek() != quote) {
-            advance();
+        while (!is_end() && peek() != quote && peek() != '\n') {
+            if (peek() == '\\') {
+                advance();                              // '\'
+                if (is_end() || peek() == '\n') break;  // оборванный escape
+                advance();                              // экранированный символ
+            } else {
+                advance();
+            }
         }
 
-        // если на этом этапе оказались в конце, значит не закрыли
-        if (is_end()) {
+        // если на этом этапе не на закрывающей кавычке - строка не закрыта
+        if (is_end() || peek() == '\n') {
             diag.error(start_line, start_column, "unterminated string literal");
             return Token{TokenKind::Undefined, "err", start_line, start_column};
         }

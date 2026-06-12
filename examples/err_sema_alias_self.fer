@@ -1,0 +1,5 @@
+// @error: type alias cycle
+type A = A;
+fn main() -> int32 {
+    return 0;
+}

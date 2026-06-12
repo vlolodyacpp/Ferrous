@@ -1,0 +1,4 @@
+// @error: unterminated char literal
+fn main() -> int32 {
+    let c: char = 'a
+}

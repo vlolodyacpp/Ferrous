@@ -1,0 +1,5 @@
+// @error: char literal too long
+fn main() -> int32 {
+    let c: char = 'ab';
+    return 0;
+}

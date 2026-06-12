@@ -1,0 +1,6 @@
+// @error: unterminated string literal
+fn main() -> int32 {
+    println("line
+end");
+    return 0;
+}

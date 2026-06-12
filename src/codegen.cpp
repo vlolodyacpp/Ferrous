@@ -599,7 +599,7 @@ namespace Codegen {
 
     // строковый литерал: глобальная строка + упаковка в {ptr, i64}
     llvm::Value* Codegen::Impl::gen_lit_string(const Parser::LitStringExpr& n) {
-        std::string str(n.value);
+        std::string str = Semantic::decode_escapes(n.value).value_or(std::string(n.value));
         llvm::Value* global = B().CreateGlobalString(str, "str");
         llvm::Value* len = llvm::ConstantInt::get(
             llvm::Type::getInt64Ty(C()), str.size());
@@ -615,21 +615,9 @@ namespace Codegen {
 
     // символьный литерал: разбор escape → i32 codepoint
     llvm::Value* Codegen::Impl::gen_lit_char(const Parser::LitCharExpr& n) {
-        std::string_view raw = n.value;
-        std::uint32_t cp = 0;
-
-        if (raw.size() >= 2 && raw[0] == '\\') {
-            if (raw == "\\n") cp = 0x0A;
-            else if (raw == "\\t") cp = 0x09;
-            else if (raw == "\\r") cp = 0x0D;
-            else if (raw == "\\\\") cp = '\\';
-            else if (raw == "\\'") cp = '\'';
-            else if (raw == "\\\"") cp = '"';
-            else if (raw == "\\0") cp = 0x00;
-        } else if (raw.size() == 1) {
-            cp = static_cast<std::uint8_t>(raw[0]);
-        }
-
+        //гарантирует ровно один символ; value_or — страховка
+        std::string decoded = Semantic::decode_escapes(n.value).value_or(std::string(n.value));
+        std::uint32_t cp = decoded.empty() ? 0 : static_cast<std::uint8_t>(decoded[0]);
         return llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()), cp);
     }
 

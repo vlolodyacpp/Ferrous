@@ -1,0 +1,7 @@
+// @error: type alias cycle
+type A = B;
+type B = A;
+fn main() -> int32 {
+    let x: A = 0;
+    return 0;
+}

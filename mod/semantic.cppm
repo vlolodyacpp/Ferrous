@@ -98,6 +98,11 @@ export namespace Semantic {
         bool is_struct(TypeID) const;
         bool is_array(TypeID) const;
         const std::vector<TypeID>& all_structs() const;  // все структуры (для проверки рекурсии)
+        const std::vector<TypeID>& all_aliases() const;  // все алиасы (для проверки циклов)
+
+        bool is_alias(TypeID) const;                       // запись — синоним типа?
+        std::optional<TypeID> alias_target(TypeID) const;  // сырая цель алиаса (nullopt, если не resolved)
+        void mark_alias_error(TypeID);                     // пометить алиас сломанным (для разрыва цикла)
 
         TypeID resolve_alias(TypeID) const;   // развернуть цепочку алиасов в конечный тип
         std::string name(TypeID) const;       // человекочитаемое имя типа
@@ -136,6 +141,7 @@ export namespace Semantic {
         std::unordered_map<std::string, TypeID> by_name_map;      // имя (struct/alias) → TypeID
         std::unordered_map<ArrayKey, TypeID, ArrayKeyHash> array_cache; // хэш типов массивов
         std::vector<TypeID> struct_ids;   // id всех структур (для проверки рекурсии)
+        std::vector<TypeID> alias_ids;    // id всех алиасов (для проверки циклов)
         TypeID error_id{};                // тип-ошибка (после плохой типизации)
         TypeID void_id{};                 // void
         TypeID untyped_int_id{};          // общий untyped-int
@@ -234,6 +240,10 @@ export namespace Semantic {
 
         void pass2(const std::vector<Parser::Decl>&, Scope&);  // проверка тел функций
         void check_recursive_structs();                        // запрет бесконечно-рекурсивных структур
+        void verify_alias_cycles();                            // запрет циклов синонимов типов
+
+        // позиции объявлений типов верхнего уровня (struct/alias) — для диагностик
+        std::unordered_map<std::uint32_t, std::pair<std::size_t, std::size_t>> decl_pos;
         void pass1_fn(Scope&, const Parser::FnDecl&, std::size_t line, std::size_t col); // регистрация функции (+ перегрузки)
         void check_function_body(const Parser::FnDecl&, Scope&, std::size_t line, std::size_t col); // проверка тела одной функции (parent — scope namespace/root)
         void verify_main();                                    // наличие main
@@ -260,4 +270,6 @@ export namespace Semantic {
 
 
     void print_diagnostics(const DiagBag&, std::string_view, std::ostream&);
+
+    std::optional<std::string> decode_escapes(std::string_view raw, char* bad = nullptr);
 }
