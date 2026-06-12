@@ -1,0 +1,5 @@
+// @error: return type mismatch
+fn f() -> int32 {
+    return "text";         // возврат не того типа
+}
+fn main() -> int32 { return 0; }

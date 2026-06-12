@@ -1,0 +1,5 @@
+// @error: break outside loop
+fn main() -> int32 {
+    break;                 // break вне цикла
+    return 0;
+}

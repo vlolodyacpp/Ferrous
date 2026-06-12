@@ -1,0 +1,7 @@
+// @error: cannot assign int64 to int8
+fn main() -> int32 {
+    let mut x: int8 = 1;
+    let y: int64 = 123456789;
+    x = y;                // присваивание без неявных преобразований запрещено
+    return 0;
+}

@@ -1,0 +1,5 @@
+// @error: cannot index non-array
+fn main() -> int32 {
+    let x: int32 = 5;
+    return x[0];           // индексация не-массива
+}

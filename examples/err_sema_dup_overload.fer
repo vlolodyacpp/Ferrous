@@ -1,0 +1,4 @@
+// @error: duplicate overload
+fn f(x: int32) -> int32 { return x; }
+fn f(x: int32) -> int32 { return 0; }   // идентичная сигнатура
+fn main() -> int32 { return 0; }

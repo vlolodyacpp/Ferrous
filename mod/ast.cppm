@@ -15,8 +15,6 @@ export namespace Parser {
     struct Expr;
     struct Stmt;
     struct Decl;
-
-
     
     struct BuiltinTypeRef  {    // def type
         Lexer::TokenKind type_kind;

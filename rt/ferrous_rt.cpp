@@ -140,4 +140,31 @@ extern "C" {
         return (la == lb && std::memcmp(a, b, static_cast<std::size_t>(la)) == 0) ? 1 : 0;
     }
 
+
+    // копирует std::string в арену и возвращает FerStr
+    static FerStr fer_from_std(const std::string& s) {
+        char* p = static_cast<char*>(arena_alloc(s.size()));
+        std::memcpy(p, s.data(), s.size());
+        return {p, static_cast<std::int64_t>(s.size())};
+    }
+
+    FerStr __ferrous_int_to_string(std::int64_t v)  { return fer_from_std(std::to_string(v)); }
+    FerStr __ferrous_uint_to_string(std::uint64_t v) { return fer_from_std(std::to_string(v)); }
+    FerStr __ferrous_float_to_string(double v)      { return fer_from_std(std::to_string(v)); }
+    FerStr __ferrous_bool_to_string(std::int8_t v)  {
+        return fer_from_std(v ? std::string("true") : std::string("false"));
+    }
+
+    std::int64_t __ferrous_string_to_int(const char* s, std::int64_t len) {
+        std::string tmp(s, static_cast<std::size_t>(len));
+        try { return std::stoll(tmp); }
+        catch (...) { return 0; }
+    }
+
+    double __ferrous_string_to_float(const char* s, std::int64_t len) {
+        std::string tmp(s, static_cast<std::size_t>(len));
+        try { return std::stod(tmp); }
+        catch (...) { return 0.0; }
+    }
+
 } // extern "C"

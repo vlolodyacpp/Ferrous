@@ -95,6 +95,8 @@ namespace Codegen {
         // текущая LLVM-функция
         llvm::Value* cg_fn = nullptr;
         Semantic::TypeID cg_return_type{};
+        // namespace-префикс текущей функции ("ns1::ns2::")
+        std::string cg_ns_prefix;
 
         // стек областей видимости
         std::deque<CGScope> scope_storage;
@@ -110,6 +112,8 @@ namespace Codegen {
         std::vector<llvm::BasicBlock*> break_stack;
         std::vector<llvm::BasicBlock*> continue_stack;
         bool cg_in_loop = false;
+        // выставляется при внутренней рассогласованности кодогена
+        bool cg_failed = false;
 
         // главный вход; false — если кодоген/линковка завершились ошибкой
         bool generate(const std::vector<Parser::Decl>& decls,
@@ -390,6 +394,14 @@ namespace Codegen {
         decl("__ferrous_str_concat", str_ty, {i8p_ty, i64_ty, i8p_ty, i64_ty});
         decl("__ferrous_str_eq",     llvm::Type::getInt8Ty(c),
              {i8p_ty, i64_ty, i8p_ty, i64_ty});
+
+        // преобразования строка <-> число
+        decl("__ferrous_int_to_string",   str_ty, {i64_ty});
+        decl("__ferrous_uint_to_string",  str_ty, {i64_ty});
+        decl("__ferrous_float_to_string", str_ty, {double_ty});
+        decl("__ferrous_bool_to_string",  str_ty, {i8_ty});
+        decl("__ferrous_string_to_int",   i64_ty,    {i8p_ty, i64_ty});
+        decl("__ferrous_string_to_float", double_ty, {i8p_ty, i64_ty});
     }
 
     // регистрация структур в модуле: StructType::setBody
@@ -543,6 +555,10 @@ namespace Codegen {
         tid = types->resolve_alias(tid);
 
         llvm::Type* lt = to_llvm_type(tid);
+
+        // int-литерал в вещественном контексте
+        if (lt->isFloatingPointTy())
+            return llvm::ConstantFP::get(lt, static_cast<double>(val));
         if (!lt->isIntegerTy()) lt = llvm::Type::getInt32Ty(C());
         return llvm::ConstantInt::get(lt, val, false);
     }
@@ -895,6 +911,8 @@ namespace Codegen {
                 fn_name += std::string(seg);
             }
         } else {
+            std::cerr << "codegen: unsupported call target\n";
+            cg_failed = true;
             return i32_zero();
         }
 
@@ -912,26 +930,45 @@ namespace Codegen {
         if (fn_name == "print" || fn_name == "println" ||
             fn_name == "input" || fn_name == "len" ||
             fn_name == "exit" || fn_name == "panic" ||
-            fn_name == "assert") {
+            fn_name == "assert" || fn_name == "to_string" ||
+            fn_name == "to_int" || fn_name == "to_float") {
             return gen_builtin_call(fn_name, args, arg_tids, n.line);
         }
 
         // пользовательская функция — манглинг по типам
         std::string mangled = mangle(fn_name, arg_tids);
 
-        llvm::Function* callee = nullptr;
-        llvm::FunctionType* ft = nullptr;
-        if (auto it = functions.find(mangled); it != functions.end()) {
-            callee = llvm::cast<llvm::Function>(it->second);
-            ft = llvm::cast<llvm::FunctionType>(function_types[mangled]);
-        } else if (auto it = functions.find(fn_name); it != functions.end()) {
-            callee = llvm::cast<llvm::Function>(it->second);
-            if (auto tit = function_types.find(fn_name); tit != function_types.end())
-                ft = llvm::cast<llvm::FunctionType>(tit->second);
+        // кандидаты имён - текущий namespace и все объемлющие, затем глобальная область — зеркалит обход scope-цепочки в семантике
+        std::vector<std::string> prefixes;
+        for (std::string p = cg_ns_prefix;;) {
+            prefixes.push_back(p);
+            if (p.empty()) break;
+            std::string t = p.substr(0, p.size() - 2);   // убрать хвостовой "::"
+            auto pos = t.rfind("::");
+            p = (pos == std::string::npos) ? std::string() : t.substr(0, pos + 2);
         }
 
-        if (!callee || !ft)
+        llvm::Function* callee = nullptr;
+        llvm::FunctionType* ft = nullptr;
+        for (const auto& pre : prefixes) {
+            for (const std::string& key : {pre + mangled, pre + std::string(fn_name)}) {
+                auto it = functions.find(key);
+                if (it == functions.end()) continue;
+                callee = llvm::cast<llvm::Function>(it->second);
+                if (auto tit = function_types.find(key); tit != function_types.end())
+                    ft = llvm::cast<llvm::FunctionType>(tit->second);
+                break;
+            }
+            if (callee) break;
+        }
+
+        if (!callee || !ft) {
+            // семантика пропустила вызов, который кодоген не нашёл
+            std::cerr << "codegen: no function '" << mangled
+                      << "' (unresolved call to '" << fn_name << "')\n";
+            cg_failed = true;
             return i32_zero();
+        }
 
         std::vector<llvm::Value*> cargs;
         cargs.reserve(args.size());
@@ -1142,7 +1179,11 @@ namespace Codegen {
     // блок: push/pop CGScope, обход инструкций
     void Codegen::Impl::gen_block(const Parser::BlockStmt& n) {
         push_cg_scope();
-        for (const auto& s : n.elems) gen_stmt(s);
+        for (const auto& s : n.elems) {
+            gen_stmt(s);
+            // код после return/break/continue недостижим
+            if (B().GetInsertBlock()->getTerminator()) break;
+        }
         pop_cg_scope();
     }
 
@@ -1297,9 +1338,49 @@ namespace Codegen {
             return call_rt("__ferrous_input", {});
 
         if (name == "len") {
+            if (!arg_tids.empty()) {
+                Semantic::TypeID t = types->resolve_alias(arg_tids[0]);
+                if (const auto* at = types->get_array(t)) {
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(C()),
+                        at->size);
+                }
+            }
             llvm::Value* len = B().CreateExtractValue(av[0], {1u}, "len");
             return B().CreateTrunc(len,
                 llvm::Type::getInt32Ty(C()), "len32");
+        }
+
+        // число → строка (T3): выбираем рантайм по типу аргумента
+        if (name == "to_string") {
+            if (av.empty()) return i32_zero();
+            llvm::Value* v = av[0];
+            Semantic::TypeID tid = types->resolve_alias(arg_tids[0]);
+            auto is = [&](TokenKind k) { return types->equal(tid, types->builtin(k)); };
+            llvm::Type* i64t = llvm::Type::getInt64Ty(C());
+            if (is(TokenKind::KwFloat32))
+                v = B().CreateFPExt(v, llvm::Type::getDoubleTy(C()), "f2d");
+            if (is(TokenKind::KwFloat32) || is(TokenKind::KwFloat64))
+                return call_rt("__ferrous_float_to_string", {v});
+            if (is(TokenKind::KwBool)) {
+                v = B().CreateZExt(v, llvm::Type::getInt8Ty(C()), "boolb");
+                return call_rt("__ferrous_bool_to_string", {v});
+            }
+            // целочисленные: расширяем до i64 (знаково/беззнаково) и зовём нужный рантайм
+            bool uns = is(TokenKind::KwUint8) || is(TokenKind::KwUint16)
+                    || is(TokenKind::KwUint32) || is(TokenKind::KwUint64);
+            if (v->getType()->getIntegerBitWidth() < 64)
+                v = uns ? B().CreateZExt(v, i64t, "z64")
+                        : B().CreateSExt(v, i64t, "s64");
+            return call_rt(uns ? "__ferrous_uint_to_string"
+                               : "__ferrous_int_to_string", {v});
+        }
+
+        // строка → число (T3)
+        if (name == "to_int" || name == "to_float") {
+            llvm::Value* ptr = B().CreateExtractValue(av[0], {0u});
+            llvm::Value* len = B().CreateExtractValue(av[0], {1u});
+            return call_rt(name == "to_int" ? "__ferrous_string_to_int"
+                                            : "__ferrous_string_to_float", {ptr, len});
         }
 
         if (name == "exit") {
@@ -1375,6 +1456,7 @@ namespace Codegen {
 
         cg_fn = llvm_fn;
         if (!cg_fn) return;
+        cg_ns_prefix = prefix;   // для разрешения бесфиксных вызовов внутри namespace
 
         // entry-блок
         llvm::Function* fn_v = llvm::cast<llvm::Function>(cg_fn);
@@ -1403,13 +1485,17 @@ namespace Codegen {
         push_cg_scope();
         cg_in_loop = false;
 
-        for (const auto& s : fn.body.elems)
+        for (const auto& s : fn.body.elems) {
             gen_stmt(s);
+            if (B().GetInsertBlock()->getTerminator()) break;  // далее недостижимо (M5)
+        }
 
-        // если void и нет return — вставляем ret void в ТЕКУЩИЙ блок
-        if (!B().GetInsertBlock()->getTerminator() &&
-            types->equal(cg_return_type, types->void_type())) {
-            B().CreateRetVoid();
+        // хвост функции без терминатора: void → ret void; иначе блок недостижим
+        if (!B().GetInsertBlock()->getTerminator()) {
+            if (types->equal(cg_return_type, types->void_type()))
+                B().CreateRetVoid();
+            else
+                B().CreateUnreachable();
         }
 
         pop_cg_scope();
@@ -1455,6 +1541,12 @@ namespace Codegen {
         declare_structs(decls);
         declare_functions(decls);
         define_functions(decls);
+
+        // внутренний рассинхрон фаз (неразрешённый вызов и т.п.) — прерываем
+        if (cg_failed) {
+            std::cerr << "codegen aborted due to internal errors\n";
+            return false;
+        }
 
         // верификация — при ошибке прерываем (не пишем .ll, не линкуем)
         std::string vfy_err;

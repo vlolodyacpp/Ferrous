@@ -219,6 +219,7 @@ export namespace Semantic {
         Scope* current_scope = nullptr;     // текущая область при обходе
         TypeID current_return_type{};       // ожидаемый тип return
         bool in_loop = false;
+        std::size_t cur_line = 0, cur_col = 0;  // позиция для диагностик без явного узла
 
         // TypeRef → TypeID
         std::optional<TypeID> resolve_type(const Parser::TypeRef&);
@@ -233,8 +234,8 @@ export namespace Semantic {
 
         void pass2(const std::vector<Parser::Decl>&, Scope&);  // проверка тел функций
         void check_recursive_structs();                        // запрет бесконечно-рекурсивных структур
-        void pass1_fn(Scope&, const Parser::FnDecl&);          // регистрация функции (+ перегрузки)
-        void check_function_body(const Parser::FnDecl&);       // проверка тела одной функции
+        void pass1_fn(Scope&, const Parser::FnDecl&, std::size_t line, std::size_t col); // регистрация функции (+ перегрузки)
+        void check_function_body(const Parser::FnDecl&, Scope&, std::size_t line, std::size_t col); // проверка тела одной функции (parent — scope namespace/root)
         void verify_main();                                    // наличие main
 
 
@@ -254,6 +255,7 @@ export namespace Semantic {
         bool types_compatible(TypeID, TypeID);  // совместимость (с учётом untyped)
         bool is_unsigned(TypeID) const;         // беззнаковый целочисленный тип?
         int bit_width(TypeID) const;            // ширина типа в битах (для приведений)
+        bool int_literal_fits(std::uint64_t, TypeID) const;  // влезает ли литерал в целевой int
     };
 
 

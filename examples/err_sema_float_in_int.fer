@@ -1,0 +1,5 @@
+// @error: float literal cannot initialize value of type int32
+fn main() -> int32 {
+    let x: int32 = 3.5;   // float-литерал в целочисленную переменную
+    return 0;
+}

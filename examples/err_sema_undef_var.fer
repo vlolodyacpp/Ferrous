@@ -1,0 +1,4 @@
+// @error: undefined identifier
+fn main() -> int32 {
+    return y;             // y не объявлена
+}

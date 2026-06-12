@@ -1,0 +1,4 @@
+// @error: function 'main' must return int32
+fn main() -> float64 {     // main должна возвращать int32
+    return 0.0;
+}

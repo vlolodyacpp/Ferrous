@@ -512,6 +512,15 @@ namespace Semantic {
         add_fn("exit", {int32}, void_);
         add_fn("panic", {str}, void_);
 
+        // преобразования число → строка
+        for (auto t : {int8, int16, int32, int64, uint8,
+            uint16, uint32, uint64, float32, float64, bool_}) {
+            add_fn("to_string", {t}, str);
+        }
+        // строка → число (T3)
+        add_fn("to_int",   {str}, int64);
+        add_fn("to_float", {str}, float64);
+
         add_fn("assert", {bool_}, void_);
         add_fn("assert", {bool_, str}, void_);
     }
@@ -528,7 +537,7 @@ namespace Semantic {
                 if (auto tid = registry.by_name(n.name)) {
                     return *tid;
                 }
-                diag.error(0, 0, "unknown type '" + std::string(n.name) + "'");
+                diag.error(cur_line, cur_col, "unknown type '" + std::string(n.name) + "'");
                 return std::nullopt;
             } else if constexpr (std::is_same_v<T, Parser::ArrayTypeRef>) {
                 auto elem = resolve_type(*n.elem);
@@ -537,12 +546,12 @@ namespace Semantic {
                 }
                 auto size = parse_uint(n.size);
                 if (!size || *size == 0) {
-                    diag.error(0, 0, "array size must be positive");
+                    diag.error(cur_line, cur_col, "array size must be positive");
                     return std::nullopt;
                 }
                 return registry.array(*elem, *size);
             } else {
-                diag.error(0, 0, "unexpected type form");
+                diag.error(cur_line, cur_col, "unexpected type form");
                 return std::nullopt;
             }
         }, tr.node);
@@ -560,7 +569,7 @@ namespace Semantic {
         pass1_types(decls, scope);
         for (const auto& d : decls) {
             if (auto* fn = std::get_if<Parser::FnDecl>(&d.node)) {
-                pass1_fn(scope, *fn);
+                pass1_fn(scope, *fn, d.line, d.column);
             } else if (auto* ns = std::get_if<Parser::NameSpaceDecl>(&d.node)) {
                 Scope& ns_scope = ensure_namespace(scope, ns->name);
                 pass1(ns->decls, ns_scope);
@@ -611,6 +620,7 @@ namespace Semantic {
         // подпроход 3: поля структур
         for (const auto& d : decls) {
             if (auto* st = std::get_if<Parser::StructDecl>(&d.node)) {
+                cur_line = d.line; cur_col = d.column;
                 std::unordered_set<std::string_view> seen_fields;
                 std::vector<std::pair<std::string_view, TypeID>> fields;
                 fields.reserve(st -> field.size());
@@ -671,7 +681,9 @@ namespace Semantic {
     }
 
     // регистрация сигнатуры функции
-    void Semantic::pass1_fn(Scope& scope, const Parser::FnDecl& fn) {
+    void Semantic::pass1_fn(Scope& scope, const Parser::FnDecl& fn,
+                            std::size_t line, std::size_t col) {
+        cur_line = line; cur_col = col;
         // типы параметров
         std::vector<TypeID> params;
         for (const auto& [param_name, param_type] : fn.params) {
@@ -691,7 +703,7 @@ namespace Semantic {
         // конфликт имён
         Symbol* existing = scope.lookup_local(fn.name);
         if (existing && existing->kind != SymbolKind::Function) {
-            diag.error(0, 0, "'" + std::string(fn.name)
+            diag.error(line, col, "'" + std::string(fn.name)
                 + "' is already declared as non-function");
             return;
         }
@@ -704,7 +716,7 @@ namespace Semantic {
         // дубликат сигнатуры
         for (const auto& other : fs.overloads) {
             if (other.params == sig.params) {
-                diag.error(0, 0, "duplicate overload of '" + std::string(fn.name) + "'");
+                diag.error(line, col, "duplicate overload of '" + std::string(fn.name) + "'");
                 return;
             }
         }
@@ -789,6 +801,26 @@ namespace Semantic {
     }
 
     // всегда ли возвращает?
+    // содержит ли блок break, выходящий из текущего цикла
+    // (во вложенные while не спускаемся — их break перехватываются ими)
+    static bool contains_break(const Parser::Stmt& stmt) {
+        return std::visit([&](const auto& n) -> bool {
+            using T = std::decay_t<decltype(n)>;
+            if constexpr (std::is_same_v<T, Parser::BreakStmt>) return true;
+            if constexpr (std::is_same_v<T, Parser::BlockStmt>) {
+                for (const auto& s : n.elems)
+                    if (contains_break(s)) return true;
+                return false;
+            }
+            if constexpr (std::is_same_v<T, Parser::IfStmt>) {
+                return contains_break(*n.then_body)
+                    || (n.else_body && contains_break(*n.else_body));
+            }
+            // WhileStmt и прочее — break внутри них к нашему циклу не относится
+            return false;
+        }, stmt.node);
+    }
+
     bool Semantic::always_returns(const Parser::Stmt& stmt) {
         return std::visit([&](const auto& n) -> bool {
             using T = std::decay_t<decltype(n)>;
@@ -803,12 +835,13 @@ namespace Semantic {
                 return n.else_body && always_returns(*n.then_body) && always_returns(*n.else_body);
             }
             if constexpr (std::is_same_v<T, Parser::WhileStmt>) {
-                // while true — всегда возвращает
+                // while true без break никогда не «проваливается» дальше → путь завершён.
+                // С break управление может выйти из цикла — тогда возврат не гарантирован.
                 bool cond_is_true = false;
                 if (const auto* lit = std::get_if<Parser::LitBoolExpr>(&n.condition->node)) {
                     cond_is_true = lit->value;
                 }
-                return cond_is_true && always_returns(*n.body);
+                return cond_is_true && !contains_break(*n.body);
             }
             return false;
         }, stmt.node);
@@ -821,7 +854,7 @@ namespace Semantic {
         std::vector<TypeID> resolved_args;
     };
 
-    // поиск перегрузки по типам аргументов.
+    // поиск перегрузки по типам аргументов.xz
     static std::optional<OverloadMatch> resolve_overload(
         const std::vector<FuncSig>& overloads,
         const std::vector<TypeID>& arg_types,
@@ -848,6 +881,12 @@ namespace Semantic {
                 if (registry.is_untyped_float(arg) && registry.is_fixed_float(param)) {
                     resolved[j] = param;
                     cost += registry.equal(param, registry.builtin(TokenKind::KwFloat64)) ? 1 : 2;
+                    continue;
+                }
+                // untyped-int в float-параметр
+                if (registry.is_untyped_int(arg) && registry.is_fixed_float(param)) {
+                    resolved[j] = param;
+                    cost += registry.equal(param, registry.builtin(TokenKind::KwFloat64)) ? 3 : 4;
                     continue;
                 }
                 match = false;
@@ -891,11 +930,33 @@ namespace Semantic {
                         case IntSuffix::U32: fixed = registry.builtin(TokenKind::KwUint32); break;
                         case IntSuffix::U64: fixed = registry.builtin(TokenKind::KwUint64); break;
                     }
+                    if (!int_literal_fits(parsed->value, fixed)) {
+                        diag.error(e.line, e.column, "integer literal '" + std::string(n.value)
+                            + "' out of range for type " + registry.name(fixed));
+                        return registry.error_type();
+                    }
                     return fixed;
                 }
                 // без суффикса
                 if (expected && !registry.is_untyped(*expected)) {
-                    return *expected;
+                    TypeID exp_norm = registry.resolve_alias(*expected);
+                    // целочисленный контекст — проверяем диапазон литерала
+                    if (registry.is_fixed_int(exp_norm)) {
+                        if (!int_literal_fits(parsed->value, exp_norm)) {
+                            diag.error(e.line, e.column, "integer literal '" + std::string(n.value)
+                                + "' out of range for type " + registry.name(*expected));
+                            return registry.error_type();
+                        }
+                        return *expected;
+                    }
+                    // вещественный контекст — int-литерал допустим (3.0 == 3)
+                    if (registry.is_fixed_float(exp_norm)) {
+                        return *expected;
+                    }
+                    // ожидается нечисловой тип (string/bool/array/struct) — литерал не подходит
+                    diag.error(e.line, e.column, "integer literal cannot initialize value of type "
+                        + registry.name(*expected));
+                    return registry.error_type();
                 }
                 return registry.untyped_int();
             }
@@ -911,7 +972,14 @@ namespace Semantic {
                 }
                 // без суффикса — из контекста, иначе untyped (по умолчанию float64)
                 if (expected && !registry.is_untyped(*expected)) {
-                    return *expected;
+                    TypeID exp_norm = registry.resolve_alias(*expected);
+                    if (registry.is_fixed_float(exp_norm)) {
+                        return *expected;
+                    }
+                    // float-литерал нельзя положить в int/string/bool/
+                    diag.error(e.line, e.column, "float literal cannot initialize value of type "
+                        + registry.name(*expected));
+                    return registry.error_type();
                 }
                 return registry.untyped_float();
             }
@@ -1015,7 +1083,7 @@ namespace Semantic {
 
             // унарные операторы
             if constexpr (std::is_same_v<T, Parser::UnaryExpr>) {
-                    TypeID inner = check_rec(*n.operand, std::nullopt);
+                    TypeID inner = check_rec(*n.operand, expected);
                 if (registry.equal(inner, registry.error_type())) {
                     return registry.error_type();
                 }
@@ -1205,8 +1273,14 @@ namespace Semantic {
                     }
                 } else {
                     // присваивание
-                    TypeID rhs_t = check_expr(*n.rhs, std::nullopt);
                     TypeID lhs_t = check_expr(*n.lhs, std::nullopt);
+                    // тип цели прокидываем в rhs как ожидаемый — untyped-литерал
+                    // подстроится под цель (let x: int8 = 1; x = 2;)
+                    TypeID rhs_t = check_expr(*n.rhs, lhs_t);
+                    if (registry.is_untyped(rhs_t)) {
+                        rhs_t = lhs_t;
+                        aast.expr_type[n.rhs.get()] = rhs_t;
+                    }
                     if (!is_lvalue(*n.lhs)) {
                         diag.error(e.line, e.column, "left-hand side of assignment must be an lvalue");
                         return registry.error_type();
@@ -1215,9 +1289,9 @@ namespace Semantic {
                         diag.error(e.line, e.column, "cannot assign to immutable variable");
                         return registry.error_type();
                     }
-                    TypeID lhs_norm = registry.resolve_alias(lhs_t);
-                    TypeID rhs_norm = registry.resolve_alias(rhs_t);
-                    if (!types_compatible(lhs_norm, rhs_norm)) {
+                    // строгое равенство типов
+                    if (!registry.equal(registry.resolve_alias(lhs_t),
+                                        registry.resolve_alias(rhs_t))) {
                         diag.error(e.line, e.column, "cannot assign " + registry.name(rhs_t)
                             + " to " + registry.name(lhs_t));
                         return registry.error_type();
@@ -1310,6 +1384,12 @@ namespace Semantic {
                     arg_types.push_back(check_expr(arg, std::nullopt));
                 }
 
+                // len(array) — длина массива
+                if (!is_path && fn_name == "len" && arg_types.size() == 1
+                    && registry.is_array(registry.resolve_alias(arg_types[0]))) {
+                    return registry.builtin(TokenKind::KwInt32);
+                }
+
                 // разрешение перегрузки
                 auto match = resolve_overload(fs.overloads, arg_types, registry);
                 if (!match) {
@@ -1379,9 +1459,21 @@ namespace Semantic {
                     diag.error(e.line, e.column, "cannot infer type of empty array literal");
                     return registry.error_type();
                 }
-                TypeID elem_type = check_expr(n.elems[0], std::nullopt);
+                // ожидаемый тип элемента из контекста (let a: [float64; 2] = [1.5, 2.5])
+                std::optional<TypeID> exp_elem;
+                if (expected) {
+                    TypeID exp_norm = registry.resolve_alias(*expected);
+                    if (const auto* at = registry.get_array(exp_norm)) {
+                        exp_elem = at->elem;
+                    }
+                }
+                TypeID elem_type = check_expr(n.elems[0], exp_elem);
                 if (registry.is_untyped(elem_type)) {
-                    elem_type = registry.builtin(TokenKind::KwInt32);
+                    // есть контекст — берём его; иначе untyped-int→int32, untyped-float→float64
+                    elem_type = exp_elem.value_or(
+                        registry.is_untyped_float(elem_type)
+                            ? registry.builtin(TokenKind::KwFloat64)
+                            : registry.builtin(TokenKind::KwInt32));
                     aast.expr_type[&n.elems[0]] = elem_type;
                 }
                 for (std::size_t i = 1; i < n.elems.size(); ++i) {
@@ -1454,6 +1546,7 @@ namespace Semantic {
 
     // проверка инструкций
     void Semantic::check_stmt(const Parser::Stmt& stmt) {
+        cur_line = stmt.line; cur_col = stmt.column;   // запасная позиция для resolve_type (T5)
         std::visit([&](const auto& n) {
             using T = std::decay_t<decltype(n)>;
 
@@ -1469,8 +1562,9 @@ namespace Semantic {
                     init_t = expected.value_or(registry.builtin(TokenKind::KwInt32));
                     aast.expr_type[n.expr_init.get()] = init_t;
                 }
-                if (expected && !registry.equal(registry.resolve_alias(init_t),
-                                                registry.resolve_alias(*expected))) {
+                if (expected && !registry.equal(init_t, registry.error_type())
+                    && !registry.equal(registry.resolve_alias(init_t),
+                                       registry.resolve_alias(*expected))) {
                     diag.error(stmt.line, stmt.column, "type mismatch: variable '" + std::string(n.name)
                         + "' expects " + registry.name(*expected)
                         + ", got " + registry.name(init_t));
@@ -1531,8 +1625,9 @@ namespace Semantic {
                         val_t = current_return_type;
                         aast.expr_type[&*n.value] = val_t;
                     }
-                    if (!registry.equal(registry.resolve_alias(val_t),
-                                        registry.resolve_alias(current_return_type))) {
+                    if (!registry.equal(val_t, registry.error_type())
+                        && !registry.equal(registry.resolve_alias(val_t),
+                                           registry.resolve_alias(current_return_type))) {
                         diag.error(stmt.line, stmt.column, "return type mismatch: expected "
                             + registry.name(current_return_type)
                             + ", got " + registry.name(val_t));
@@ -1567,8 +1662,10 @@ namespace Semantic {
     }
 
     // проверка тела функции
-    void Semantic::check_function_body(const Parser::FnDecl& fn) {
-        Scope& fn_scope = push_scope(root_scope);
+    void Semantic::check_function_body(const Parser::FnDecl& fn, Scope& parent,
+                                       std::size_t line, std::size_t col) {
+        cur_line = line; cur_col = col;
+        Scope& fn_scope = push_scope(parent);
         Scope* old_scope = current_scope;
         current_scope = &fn_scope;
 
@@ -1601,7 +1698,7 @@ namespace Semantic {
                 if (always_returns(s)) { has_return = true; break; }
             }
             if (!has_return) {
-                diag.error(0, 0, "non-void function '" + std::string(fn.name)
+                diag.error(line, col, "non-void function '" + std::string(fn.name)
                     + "' does not return a value on all paths");
             }
         }
@@ -1617,7 +1714,7 @@ namespace Semantic {
             std::visit([&](const auto& n) {
                 using T = std::decay_t<decltype(n)>;
                 if constexpr (std::is_same_v<T, Parser::FnDecl>) {
-                    check_function_body(n);
+                    check_function_body(n, scope, d.line, d.column);
                 } else if constexpr (std::is_same_v<T, Parser::NameSpaceDecl>) {
                     Symbol* ns_sym = scope.lookup_local(n.name);
                     if (ns_sym && ns_sym->kind == SymbolKind::Namespace) {
@@ -1709,6 +1806,18 @@ namespace Semantic {
         if (registry.equal(norm, registry.builtin(TokenKind::KwFloat32))) return 32;
         if (registry.equal(norm, registry.builtin(TokenKind::KwFloat64))) return 64;
         return 0;
+    }
+
+    // помещается ли беззнаковая величина литерала в целевой целочисленный тип
+    bool Semantic::int_literal_fits(std::uint64_t value, TypeID type) const {
+        TypeID norm = registry.resolve_alias(type);
+        int w = bit_width(norm);
+        if (w <= 0 || w > 64) return true;     // не целочисленный тип
+        if (w == 64) return true;
+        if (is_unsigned(norm)) {
+            return value < (std::uint64_t{1} << w);
+        }
+        return value <= (std::uint64_t{1} << (w - 1));
     }
 
     // печать диагностик

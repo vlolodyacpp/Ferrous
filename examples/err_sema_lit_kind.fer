@@ -1,0 +1,5 @@
+// @error: integer literal cannot initialize value of type string
+fn main() -> int32 {
+    let s: string = 42;   // int-литерал в строковую переменную
+    return 0;
+}

@@ -1,0 +1,5 @@
+// @error: array element type mismatch
+fn main() -> int32 {
+    let a = [1, 2, true];  // элементы разных типов
+    return 0;
+}

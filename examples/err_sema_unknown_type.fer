@@ -1,0 +1,5 @@
+// @error: unknown type
+fn main() -> int32 {
+    let x: Foo = 1;        // тип Foo не объявлен
+    return 0;
+}

@@ -53,7 +53,7 @@ namespace Parser {
     // вспомогательные ф-ции
 
     bool Parser::is_end() const {
-        return tokens[pos].kind == Lexer::TokenKind::Eof;
+        return tokens[pos].kind == TokenKind::Eof;
     }
 
     Lexer::Token Parser::peek() const {
@@ -95,9 +95,6 @@ namespace Parser {
                 where.column = prev.column + prev.lexeme.size();
             }
             report_error(where, std::format("expected {}, got `{}`", token_label(k), t.lexeme));
-            // НЕ поглощаем токен: иначе пропущенная `;` съедала бы следующий
-            // стейтмент и парсер каскадно сыпал ошибками. Оставляем токен на месте,
-            // чтобы внешний цикл (parse_block/parse) восстановился на его границе.
             return Lexer::Token{TokenKind::Eof, "err", where.line, where.column};
         }
         return advance();

@@ -42,10 +42,18 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // без -o имя исходника
+    std::string derived_output;
     if (!output_path) {
-        // без -o: дефолтное имя a.out
-        static const char a_out[] = "a.out";
-        output_path = a_out;
+        std::string_view src = path;
+        if (auto slash = src.find_last_of("/\\"); slash != std::string_view::npos)
+            src.remove_prefix(slash + 1);
+        if (src.size() > 4 && src.substr(src.size() - 4) == ".fer")
+            derived_output = std::string(src.substr(0, src.size() - 4));
+        else
+            derived_output = std::string(src) + ".out";
+        if (derived_output.empty()) derived_output = "a.out";
+        output_path = derived_output.c_str();
     }
 
     std::ifstream in(path);

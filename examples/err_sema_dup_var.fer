@@ -1,0 +1,6 @@
+// @error: duplicate variable
+fn main() -> int32 {
+    let x: int32 = 1;
+    let x: int32 = 2;      // повторное объявление в одном scope
+    return 0;
+}

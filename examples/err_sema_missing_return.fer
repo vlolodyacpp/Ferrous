@@ -1,0 +1,5 @@
+// @error: does not return a value on all paths
+fn f() -> int32 {
+    let x: int32 = 1;      // нет return в не-void функции
+}
+fn main() -> int32 { return 0; }

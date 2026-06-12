@@ -14,15 +14,11 @@ export namespace Parser {
     public:
 
         explicit Parser(std::vector<Lexer::Token> tokens, Semantic::DiagBag& bag)
-            : tokens(std::move(tokens)), pos(0), diag(&bag) {}
+            : tokens(std::move(tokens)), diag(&bag) {}
         explicit Parser(std::vector<Lexer::Token> tokens)
-            : tokens(std::move(tokens)), pos(0), diag(nullptr) {}
+            : tokens(std::move(tokens)) {}
         std::vector<Decl> parse();
 
-        // для отладки(временно)
-        TypeRef debug_parse_type() { return parse_type(); }
-        Expr    debug_parse_expr() { return parse_expr(0); }
-        Stmt    debug_parse_stmt() { return parse_stmt(); }
 
     private:
 

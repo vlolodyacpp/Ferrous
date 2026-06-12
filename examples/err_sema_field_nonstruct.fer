@@ -1,0 +1,5 @@
+// @error: cannot access field of non-struct
+fn main() -> int32 {
+    let x: int32 = 5;
+    return x.foo;          // поле у не-структуры
+}

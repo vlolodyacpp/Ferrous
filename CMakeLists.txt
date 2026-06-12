@@ -39,13 +39,28 @@ target_compile_features(ferrous_rt PRIVATE cxx_std_23)
 add_custom_target(run
     COMMAND $<TARGET_FILE:Ferrous>
             ${CMAKE_SOURCE_DIR}/examples/test_arithmetic.fer
-            --dump-ast
+            -o ${CMAKE_BINARY_DIR}/run_out
+    COMMAND ${CMAKE_BINARY_DIR}/run_out
+    DEPENDS Ferrous
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+# check - прогон всего набора примеров
+add_custom_target(check
+    COMMAND ${CMAKE_SOURCE_DIR}/run_tests.sh $<TARGET_FILE:Ferrous>
+    DEPENDS Ferrous
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    USES_TERMINAL)
+
+# debug - прогон всех диагностических фаз компилятора
+add_custom_target(debug
+    COMMAND ${CMAKE_COMMAND} -E echo "== tokens =="
+    COMMAND $<TARGET_FILE:Ferrous> ${CMAKE_SOURCE_DIR}/examples/test_arithmetic.fer --dump-tokens
+    COMMAND ${CMAKE_COMMAND} -E echo "== ast =="
+    COMMAND $<TARGET_FILE:Ferrous> ${CMAKE_SOURCE_DIR}/examples/test_arithmetic.fer --dump-ast
+    COMMAND ${CMAKE_COMMAND} -E echo "== sema =="
+    COMMAND $<TARGET_FILE:Ferrous> ${CMAKE_SOURCE_DIR}/examples/test_arithmetic.fer --dump-sema
     DEPENDS Ferrous
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-
-add_custom_target(debug
-    COMMAND ${CMAKE_COMMAND} -E echo
-            "Reconfigure with: cmake -DCMAKE_BUILD_TYPE=Debug -B cmake-build-debug")
 
 target_sources(Ferrous
     PRIVATE

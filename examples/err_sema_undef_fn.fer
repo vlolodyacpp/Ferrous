@@ -1,0 +1,4 @@
+// @error: unknown function
+fn main() -> int32 {
+    return foo(1);        // нет функции foo
+}
