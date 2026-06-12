@@ -174,7 +174,7 @@ export namespace Semantic {
        std::vector<TypeID> params;
        TypeID return_type;
        const Parser::FnDecl *decl;  // nullptr для встроенных функций
-
+       std::size_t line = 0, col = 0;  // позиция объявления (для диагностик)
     };
 
     // cимвол-функция

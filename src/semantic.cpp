@@ -668,6 +668,7 @@ namespace Semantic {
         // подпроход 2: цели псевдонимов
         for (const auto& d : decls) {
             if (auto* ta = std::get_if<Parser::TypeAliasDecl>(&d.node)) {
+                cur_line = d.line; cur_col = d.column;   // позиция для unknown type
                 if (auto target = resolve_type(ta -> type)) {
                     registry.register_alias(ta -> name, *target);
                 }
@@ -799,7 +800,7 @@ namespace Semantic {
         TypeID return_type = fn.return_type
             ? resolve_type(*fn.return_type).value_or(registry.error_type())
             : registry.void_type();
-        FuncSig sig{ std::move(params), return_type, &fn };
+        FuncSig sig{ std::move(params), return_type, &fn, line, col };
 
         // конфликт имён
         Symbol* existing = scope.lookup_local(fn.name);
@@ -829,21 +830,22 @@ namespace Semantic {
         Symbol* m = root_scope.lookup_local("main");
 
         if (!m || m -> kind != SymbolKind::Function) {
-            diag.error(0, 0, "no entry point: 'main' is required");
+            // позиции нет — указываем начало
+            diag.error(1, 1, "no entry point: 'main' is required");
             return;
         }
 
         auto& fs = std::get<FuncSymbol>(m->data);
+        const auto& sig = fs.overloads.front();
         if (fs.overloads.size() != 1) {
-            diag.error(0, 0, "function 'main' must not be overloaded");
+            diag.error(sig.line, sig.col, "function 'main' must not be overloaded");
             return;
         }
 
-        const auto& sig = fs.overloads.front();
         if (!sig.params.empty())
-            diag.error(0, 0, "function 'main' must take no parameters");
+            diag.error(sig.line, sig.col, "function 'main' must take no parameters");
         if (!registry.equal(sig.return_type, registry.builtin(TokenKind::KwInt32)))
-            diag.error(0, 0, "function 'main' must return int32");
+            diag.error(sig.line, sig.col, "function 'main' must return int32");
     }
 
     // управление скоупами

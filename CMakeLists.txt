@@ -27,14 +27,16 @@ target_include_directories(Ferrous PRIVATE ${LLVM_INCLUDE_DIRS})
 target_link_directories(Ferrous PRIVATE ${LLVM_LIBRARY_DIRS})
 target_link_libraries(Ferrous PRIVATE LLVM)
 
-# Абсолютный путь к исходнику рантайма вшивается в бинарь, чтобы компилятор
-# работал из любого каталога, а не только из корня репозитория (C8).
+# Абсолютный путь к исходнику рантайма вшивается в бинарь
 target_compile_definitions(Ferrous PRIVATE
     FERROUS_RT_SRC="${CMAKE_SOURCE_DIR}/rt/ferrous_rt.cpp")
 
-# Runtime-библиотека (статическая, линкуется с каждым .fer-бинарём)
+# Runtime-библиотека
 add_library(ferrous_rt STATIC rt/ferrous_rt.cpp)
 target_compile_features(ferrous_rt PRIVATE cxx_std_23)
+
+# build - собрать компилятор и рантайм-библиотеку
+add_custom_target(build DEPENDS Ferrous ferrous_rt)
 
 add_custom_target(run
     COMMAND $<TARGET_FILE:Ferrous>
@@ -46,8 +48,8 @@ add_custom_target(run
 
 # check - прогон всего набора примеров
 add_custom_target(check
-    COMMAND ${CMAKE_SOURCE_DIR}/run_tests.sh $<TARGET_FILE:Ferrous>
-    DEPENDS Ferrous
+    COMMAND ${CMAKE_COMMAND} -E env python3 ${CMAKE_SOURCE_DIR}/run_tests.py $<TARGET_FILE:Ferrous>
+    DEPENDS Ferrous ferrous_rt
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     USES_TERMINAL)
 
