@@ -86,6 +86,16 @@ namespace Printer {
             case TokenKind::OpTilde:       return "OpTilde";
             case TokenKind::OpShl:         return "OpShl";
             case TokenKind::OpShr:         return "OpShr";
+            case TokenKind::OpPlusEq:      return "OpPlusEq";
+            case TokenKind::OpMinusEq:     return "OpMinusEq";
+            case TokenKind::OpStarEq:      return "OpStarEq";
+            case TokenKind::OpSlashEq:     return "OpSlashEq";
+            case TokenKind::OpPercentEq:   return "OpPercentEq";
+            case TokenKind::OpAmpEq:       return "OpAmpEq";
+            case TokenKind::OpPipeEq:      return "OpPipeEq";
+            case TokenKind::OpCaretEq:     return "OpCaretEq";
+            case TokenKind::OpShlEq:       return "OpShlEq";
+            case TokenKind::OpShrEq:       return "OpShrEq";
             case TokenKind::Eof:           return "Eof";
             case TokenKind::Undefined:     return "undefined";
         }
@@ -115,6 +125,16 @@ namespace Printer {
             case TokenKind::OpTilde:   return "~";
             case TokenKind::OpShl:     return "<<";
             case TokenKind::OpShr:     return ">>";
+            case TokenKind::OpPlusEq:    return "+=";
+            case TokenKind::OpMinusEq:   return "-=";
+            case TokenKind::OpStarEq:    return "*=";
+            case TokenKind::OpSlashEq:   return "/=";
+            case TokenKind::OpPercentEq: return "%=";
+            case TokenKind::OpAmpEq:     return "&=";
+            case TokenKind::OpPipeEq:    return "|=";
+            case TokenKind::OpCaretEq:   return "^=";
+            case TokenKind::OpShlEq:     return "<<=";
+            case TokenKind::OpShrEq:     return ">>=";
             default:                   return "?";
         }
     }

@@ -99,6 +99,18 @@ export namespace Lexer {
         OpShl,    // << сдвиг влево
         OpShr,    // >> сдвиг вправо
 
+        // составные присваивания (A.1.9)
+        OpPlusEq,    // +=
+        OpMinusEq,   // -=
+        OpStarEq,    // *=
+        OpSlashEq,   // /=
+        OpPercentEq, // %=
+        OpAmpEq,     // &=
+        OpPipeEq,    // |=
+        OpCaretEq,   // ^=
+        OpShlEq,     // <<=
+        OpShrEq,     // >>=
+
 
         //
         Eof,
@@ -112,5 +124,36 @@ export namespace Lexer {
         std::size_t line; // для отладки ошибок
         std::size_t column;
     };
+
+    inline bool is_compound_assign(TokenKind k) {
+        switch (k) {
+            case TokenKind::OpPlusEq:  case TokenKind::OpMinusEq:
+            case TokenKind::OpStarEq:  case TokenKind::OpSlashEq:
+            case TokenKind::OpPercentEq:
+            case TokenKind::OpAmpEq:   case TokenKind::OpPipeEq:
+            case TokenKind::OpCaretEq:
+            case TokenKind::OpShlEq:   case TokenKind::OpShrEq:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    // базовый бинарный оператор составного присваивания (`+=` → `+`)
+    inline TokenKind underlying_op(TokenKind k) {
+        switch (k) {
+            case TokenKind::OpPlusEq:    return TokenKind::OpPlus;
+            case TokenKind::OpMinusEq:   return TokenKind::OpMinus;
+            case TokenKind::OpStarEq:    return TokenKind::OpStar;
+            case TokenKind::OpSlashEq:   return TokenKind::OpSlash;
+            case TokenKind::OpPercentEq: return TokenKind::OpPercent;
+            case TokenKind::OpAmpEq:     return TokenKind::OpAmp;
+            case TokenKind::OpPipeEq:    return TokenKind::OpPipe;
+            case TokenKind::OpCaretEq:   return TokenKind::OpCaret;
+            case TokenKind::OpShlEq:     return TokenKind::OpShl;
+            case TokenKind::OpShrEq:     return TokenKind::OpShr;
+            default:                     return k;
+        }
+    }
 
 } // namespace Lexer

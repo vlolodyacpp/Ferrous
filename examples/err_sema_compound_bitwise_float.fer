@@ -1,0 +1,6 @@
+// @error: bitwise operator requires integer operands
+fn main() -> int32 {
+    let mut f: float64 = 3.0;
+    f &= 1.0;             // битовое составное присваивание определено только для целых
+    return 0;
+}

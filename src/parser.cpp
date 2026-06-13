@@ -143,7 +143,17 @@ namespace Parser {
     int Parser::get_infix_prec(TokenKind kind) {
         // Чем больше число — тем крепче связывает.
         switch (kind) {
-            case TokenKind::OpEq:        // присваивание — самое слабое (право-ассоц.)
+            case TokenKind::OpEq:        
+            case TokenKind::OpPlusEq:    
+            case TokenKind::OpMinusEq:
+            case TokenKind::OpStarEq:
+            case TokenKind::OpSlashEq:
+            case TokenKind::OpPercentEq:
+            case TokenKind::OpAmpEq:
+            case TokenKind::OpPipeEq:
+            case TokenKind::OpCaretEq:
+            case TokenKind::OpShlEq:
+            case TokenKind::OpShrEq:
                 return 1;
             case TokenKind::OpOrOr:
                 return 2;
@@ -179,8 +189,22 @@ namespace Parser {
     }
 
     bool Parser::is_right_assoc(TokenKind k) {
-        if (k == TokenKind::OpEq) return true;
-        return false;
+        switch (k) {
+            case TokenKind::OpEq:
+            case TokenKind::OpPlusEq:
+            case TokenKind::OpMinusEq:
+            case TokenKind::OpStarEq:
+            case TokenKind::OpSlashEq:
+            case TokenKind::OpPercentEq:
+            case TokenKind::OpAmpEq:
+            case TokenKind::OpPipeEq:
+            case TokenKind::OpCaretEq:
+            case TokenKind::OpShlEq:
+            case TokenKind::OpShrEq:
+                return true;
+            default:
+                return false;
+        }
     }
 
 

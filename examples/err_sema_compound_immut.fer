@@ -1,0 +1,6 @@
+// @error: cannot assign to immutable variable
+fn main() -> int32 {
+    let x: int32 = 1;
+    x += 1;               // x не mut — составное присваивание тоже запрещено
+    return 0;
+}

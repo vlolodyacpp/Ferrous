@@ -153,6 +153,9 @@ namespace Codegen {
         llvm::Value* gen_path(const Parser::PathExpr& n);
         llvm::Value* gen_unary(const Parser::UnaryExpr& n);
         llvm::Value* gen_binary(const Parser::BinaryExpr& n);
+        llvm::Value* gen_arith(Lexer::TokenKind op, llvm::Value* lhs,
+                               llvm::Value* rhs, Semantic::TypeID lhs_tid,
+                               std::size_t line);
         llvm::Value* gen_group(const Parser::GroupExpr& n);
         llvm::Value* gen_cast(const Parser::CastExpr& n);
         llvm::Value* gen_call(const Parser::CallExpr& n);
@@ -766,12 +769,32 @@ namespace Codegen {
             return phi;
         }
 
+        // составное присваивание — адрес lhs вычисляется один раз
+        if (Lexer::is_compound_assign(n.op)) {
+            Semantic::TypeID lhs_tid =
+                expr_tid(n.lhs.get(), types->builtin(TokenKind::KwInt32));
+            llvm::Value* ptr = gen_lvalue_ptr(*n.lhs);
+            llvm::Value* cur = B().CreateLoad(to_llvm_type(lhs_tid), ptr, "cur");
+            llvm::Value* rhs = gen_expr(*n.rhs);
+            llvm::Value* res =
+                gen_arith(Lexer::underlying_op(n.op), cur, rhs, lhs_tid, n.line);
+            B().CreateStore(res, ptr);
+            return res;
+        }
+
         llvm::Value* lhs = gen_expr(*n.lhs);
         llvm::Value* rhs = gen_expr(*n.rhs);
-        llvm::Type* ty = lhs->getType();
-        bool is_float = ty->isFloatingPointTy();
         // тип левого операнда из аннотаций — единый источник правды о string/struct/array
         Semantic::TypeID lhs_tid = expr_tid(n.lhs.get(), types->builtin(TokenKind::KwInt32));
+        return gen_arith(n.op, lhs, rhs, lhs_tid, n.line);
+    }
+
+    // ядро бинарной операции — общее для обычной бинарки и составного присваивания
+    llvm::Value* Codegen::Impl::gen_arith(Lexer::TokenKind op, llvm::Value* lhs,
+                                          llvm::Value* rhs, Semantic::TypeID lhs_tid,
+                                          std::size_t line) {
+        llvm::Type* ty = lhs->getType();
+        bool is_float = ty->isFloatingPointTy();
 
         auto call_rt = [&](const char* name, std::vector<llvm::Value*> a,
                            const char* lbl) -> llvm::Value* {
@@ -779,11 +802,8 @@ namespace Codegen {
             auto ft = llvm::cast<llvm::FunctionType>(function_types[name]);
             return B().CreateCall(ft, fn, a, lbl);
         };
-        // беззнаковый ли тип выражения (по TypeID левого операнда)
-        auto is_unsigned_t = [&](const Parser::Expr* ex) -> bool {
-            return is_unsigned_tid(expr_tid(ex, types->builtin(TokenKind::KwInt32)));
-        };
-        const bool is_unsigned = is_unsigned_t(n.lhs.get());
+        // беззнаковый ли тип операции (по TypeID левого операнда)
+        const bool is_unsigned = is_unsigned_tid(lhs_tid);
         // привести значение сдвига к ширине левого операнда (LLVM требует совпадения)
         auto match_width = [&](llvm::Value* v, llvm::Type* target) -> llvm::Value* {
             unsigned vw = v->getType()->getIntegerBitWidth();
@@ -793,7 +813,7 @@ namespace Codegen {
                            : B().CreateTrunc(v, target, "shw");
         };
 
-        switch (n.op) {
+        switch (op) {
             case TokenKind::OpPlus: {
                 // строковая конкатенация (определяем строку по TypeID, не по LLVM-типу)
                 if (is_string_tid(lhs_tid)) {
@@ -815,22 +835,22 @@ namespace Codegen {
                                            : B().CreateMul(lhs, rhs, "mul");
             case TokenKind::OpSlash: {
                 if (is_float) return B().CreateFDiv(lhs, rhs, "div");
-                llvm::Value* line = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), n.line);
+                llvm::Value* line_v = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), line);
                 llvm::Value* d64 = rhs->getType()->getIntegerBitWidth() < 64
                     ? (is_unsigned ? B().CreateZExt(rhs, llvm::Type::getInt64Ty(C()), "d64")
                                    : B().CreateSExt(rhs, llvm::Type::getInt64Ty(C()), "d64"))
                     : rhs;
-                call_rt("__ferrous_div_check", {d64, line}, "div_check");
+                call_rt("__ferrous_div_check", {d64, line_v}, "div_check");
                 return is_unsigned ? B().CreateUDiv(lhs, rhs, "div")
                                    : B().CreateSDiv(lhs, rhs, "div");
             }
             case TokenKind::OpPercent: {
-                llvm::Value* line = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), n.line);
+                llvm::Value* line_v = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), line);
                 llvm::Value* d64 = rhs->getType()->getIntegerBitWidth() < 64
                     ? (is_unsigned ? B().CreateZExt(rhs, llvm::Type::getInt64Ty(C()), "d64")
                                    : B().CreateSExt(rhs, llvm::Type::getInt64Ty(C()), "d64"))
                     : rhs;
-                call_rt("__ferrous_mod_check", {d64, line}, "mod_check");
+                call_rt("__ferrous_mod_check", {d64, line_v}, "mod_check");
                 return is_unsigned ? B().CreateURem(lhs, rhs, "rem")
                                    : B().CreateSRem(lhs, rhs, "rem");
             }
@@ -877,9 +897,9 @@ namespace Codegen {
                 unsigned w = ty->getIntegerBitWidth();
                 llvm::Value* mask = llvm::ConstantInt::get(ty, w - 1);
                 amt = B().CreateAnd(amt, mask, "shamt");
-                if (n.op == TokenKind::OpShl)
+                if (op == TokenKind::OpShl)
                     return B().CreateShl(lhs, amt, "shl");
-                return is_unsigned_t(n.lhs.get())
+                return is_unsigned
                     ? B().CreateLShr(lhs, amt, "lshr")    // логический для беззнаковых
                     : B().CreateAShr(lhs, amt, "ashr");   // арифметический для знаковых
             }

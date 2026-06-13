@@ -1262,6 +1262,80 @@ namespace Semantic {
             // бинарные операторы
             if constexpr (std::is_same_v<T, Parser::BinaryExpr>) {
                 bool is_assign = (n.op == TokenKind::OpEq);
+                // составное присваивание (A.1.9): `a op= b`
+                if (is_compound_assign(n.op)) {
+                    const TokenKind base = underlying_op(n.op);
+                    TypeID lhs_t = check_expr(*n.lhs, std::nullopt);
+                    TypeID rhs_t = check_expr(*n.rhs, lhs_t);
+                    if (registry.equal(lhs_t, registry.error_type()) ||
+                        registry.equal(rhs_t, registry.error_type())) {
+                        return registry.error_type();
+                    }
+                    // lvalue + мутабельность (как у обычного присваивания)
+                    if (!is_lvalue(*n.lhs)) {
+                        diag.error(e.line, e.column,
+                                   "left-hand side of assignment must be an lvalue");
+                        return registry.error_type();
+                    }
+                    if (!is_mut_root(*n.lhs)) {
+                        diag.error(e.line, e.column, "cannot assign to immutable variable");
+                        return registry.error_type();
+                    }
+                    TypeID lhs_norm = registry.resolve_alias(lhs_t);
+                    TypeID rhs_norm = registry.resolve_alias(rhs_t);
+                    // untyped-литерал справа подстраивается под тип цели
+                    if (registry.is_untyped(rhs_norm)) {
+                        rhs_t = lhs_t;
+                        rhs_norm = lhs_norm;
+                        aast.expr_type[n.rhs.get()] = rhs_t;
+                    }
+                    const bool is_shift =
+                        base == TokenKind::OpShl || base == TokenKind::OpShr;
+                    const bool is_bitwise = is_shift ||
+                        base == TokenKind::OpAmp || base == TokenKind::OpPipe ||
+                        base == TokenKind::OpCaret;
+                    const bool str_concat = base == TokenKind::OpPlus &&
+                        registry.equal(lhs_norm, registry.builtin(TokenKind::KwString)) &&
+                        registry.equal(rhs_norm, registry.builtin(TokenKind::KwString));
+                    // проверки соответствующей бинарной операции
+                    if (str_concat) {
+                        // `+=` для строк — конкатенация 
+                    } else if (is_bitwise) {
+                        if (!registry.is_fixed_int(lhs_norm) ||
+                            !registry.is_fixed_int(rhs_norm)) {
+                            diag.error(e.line, e.column,
+                                "bitwise operator requires integer operands: "
+                                + registry.name(lhs_t) + " and " + registry.name(rhs_t));
+                            return registry.error_type();
+                        }
+                    } else {
+                        auto is_numeric = [&](TypeID id) {
+                            return registry.is_fixed_int(id) || registry.is_fixed_float(id)
+                                || registry.is_untyped(id);
+                        };
+                        if (!is_numeric(lhs_norm) || !is_numeric(rhs_norm)) {
+                            diag.error(e.line, e.column,
+                                "arithmetic on non-numeric types: "
+                                + registry.name(lhs_t) + " and " + registry.name(rhs_t));
+                            return registry.error_type();
+                        }
+                        if (base == TokenKind::OpPercent &&
+                            (registry.is_float(lhs_norm) || registry.is_float(rhs_norm))) {
+                            diag.error(e.line, e.column, "modulo on float types");
+                            return registry.error_type();
+                        }
+                    }
+                    // строгое равенство типов (как у `=`); сдвиг — исключение:
+                    // величина сдвига может быть другого целого типа
+                    if (!is_shift && !registry.equal(lhs_norm, rhs_norm)) {
+                        diag.error(e.line, e.column, "cannot assign " + registry.name(rhs_t)
+                            + " to " + registry.name(lhs_t));
+                        return registry.error_type();
+                    }
+                    aast.expr_type[n.lhs.get()] = lhs_t;
+                    aast.expr_type[n.rhs.get()] = rhs_t;
+                    return lhs_t;
+                }
                 // не присваивание
                 if (!is_assign) {
                     TypeID lhs_t = check_expr(*n.lhs, std::nullopt);

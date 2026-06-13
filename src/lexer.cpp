@@ -244,6 +244,17 @@ namespace Lexer {
         const std::size_t start_line = line;
         const std::size_t start_column = column;
 
+        // трёхсимвольные операторы (<<=, >>=) — проверяем раньше двухсимвольных
+        if (const std::string_view lexeme_3_sym = source.substr(pos, 3);
+            lexeme_3_sym.size() == 3) {
+            if (const auto it_ops3 = ops.find(lexeme_3_sym); it_ops3 != ops.end()) {
+                advance();
+                advance();
+                advance();
+                return Token{it_ops3->second, lexeme_3_sym, start_line, start_column};
+            }
+        }
+
         const std::string_view lexeme_2_sym = source.substr(pos, 2);
 
         const auto it_ops1 = ops.find(lexeme_2_sym);
@@ -374,6 +385,16 @@ namespace Lexer {
         {"~", TokenKind::OpTilde},
         {"<<", TokenKind::OpShl},
         {">>", TokenKind::OpShr},
+        {"+=", TokenKind::OpPlusEq},
+        {"-=", TokenKind::OpMinusEq},
+        {"*=", TokenKind::OpStarEq},
+        {"/=", TokenKind::OpSlashEq},
+        {"%=", TokenKind::OpPercentEq},
+        {"&=", TokenKind::OpAmpEq},
+        {"|=", TokenKind::OpPipeEq},
+        {"^=", TokenKind::OpCaretEq},
+        {"<<=", TokenKind::OpShlEq},
+        {">>=", TokenKind::OpShrEq},
     };
 
     const std::unordered_map<std::string_view, TokenKind> Lexer::sep = {
