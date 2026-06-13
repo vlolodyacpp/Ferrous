@@ -1,0 +1,21 @@
+namespace geo {
+    struct P {
+        x: int32,
+        y: int32
+    }
+    type Meters = int32;
+    fn origin() -> P { return P { x: 0, y: 0 }; }
+}
+
+fn main() -> int32 {
+    // тип-реестр плоский: тип из namespace доступен по голому имени (известное
+    // ограничение языка, зафиксировано в types.md)
+    let p: P = P { x: 3, y: 4 };
+    println(p.x);                 // 3
+    println(p.y);                 // 4
+    let d: Meters = 100;
+    println(d);                   // 100
+    let o: P = geo::origin();
+    println(o.x);                 // 0
+    return 0;
+}

@@ -1,0 +1,26 @@
+struct Point {
+    x: int32,
+    y: int32
+}
+
+fn mk() -> Point {
+    return Point { x: 7, y: 9 };
+}
+
+fn main() -> int32 {
+    // индекс на литерале массива (rvalue база у [])
+    let a: int32 = [10, 20, 30][1];
+    println(a);                         // 20
+
+    // скобки вокруг lvalue прозрачны
+    let arr: [int32; 3] = [100, 200, 300];
+    let b: int32 = (arr)[2];
+    println(b);                         // 300
+
+    // поле у результата вызова (rvalue база у .)
+    println(mk().x);                    // 7
+
+    // поле у литерала структуры
+    println(Point { x: 1, y: 2 }.y);    // 2
+    return 0;
+}

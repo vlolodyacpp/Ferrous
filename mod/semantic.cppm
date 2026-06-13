@@ -84,8 +84,8 @@ export namespace Semantic {
         std::optional<TypeID> find_array(TypeID elem, std::uint64_t size) const;
 
         // структуры (двухэтапно для forward-ссылок и рекурсии)
-        TypeID struct_placeholder(std::string_view name);          // pass1: зарегистрировать имя
-        void finalize_struct(std::string_view name,                // pass1: заполнить поля
+        TypeID struct_placeholder(std::string_view name);          // pass1_declare: зарегистрировать имя
+        void finalize_struct(std::string_view name,                // pass1_declare: заполнить поля
             std::vector<std::pair<std::string_view, TypeID>> fields);
 
         // синонимы типов
@@ -146,8 +146,6 @@ export namespace Semantic {
         TypeID void_id{};                 // void
         TypeID untyped_int_id{};          // общий untyped-int
         TypeID untyped_float_id{};        // общий untyped-float
-
-        TypeID normalize(TypeID) const;   // разворачивает алиас в конечный TypeID
     };
 
     struct AnnotatedAST {
@@ -232,19 +230,20 @@ export namespace Semantic {
 
         // фазы анализа
         void install_builtins();                            // print/input/len/exit/panic/assert
-        void pass1(const std::vector<Parser::Decl>&);       // регистрация имен верхнего уровня
-        void pass1_types(const std::vector<Parser::Decl>&); // регистрация типов верхнего уровня
+        void pass1_declare(const std::vector<Parser::Decl>&);       // регистрация имен верхнего уровня
+        void pass1_declare_types(const std::vector<Parser::Decl>&); // регистрация типов верхнего уровня
 
-        void pass1(const std::vector<Parser::Decl>&, Scope&);       // перегрузка для текущей области видимости
-        void pass1_types(const std::vector<Parser::Decl>&, Scope&);
+        void pass1_declare(const std::vector<Parser::Decl>&, Scope&);       // перегрузка для текущей области видимости
+        void pass1_declare_types(const std::vector<Parser::Decl>&, Scope&);
+        void pass1_declare_fns(const std::vector<Parser::Decl>&, Scope&);   // регистрация только функций (+ рекурсия в namespace)
 
-        void pass2(const std::vector<Parser::Decl>&, Scope&);  // проверка тел функций
+        void pass2_check_bodies(const std::vector<Parser::Decl>&, Scope&);  // проверка тел функций
         void check_recursive_structs();                        // запрет бесконечно-рекурсивных структур
         void verify_alias_cycles();                            // запрет циклов синонимов типов
 
         // позиции объявлений типов верхнего уровня (struct/alias) — для диагностик
         std::unordered_map<std::uint32_t, std::pair<std::size_t, std::size_t>> decl_pos;
-        void pass1_fn(Scope&, const Parser::FnDecl&, std::size_t line, std::size_t col); // регистрация функции (+ перегрузки)
+        void pass1_declare_fn(Scope&, const Parser::FnDecl&, std::size_t line, std::size_t col); // регистрация функции (+ перегрузки)
         void check_function_body(const Parser::FnDecl&, Scope&, std::size_t line, std::size_t col); // проверка тела одной функции (parent — scope namespace/root)
         void verify_main();                                    // наличие main
 
@@ -265,7 +264,8 @@ export namespace Semantic {
         bool types_compatible(TypeID, TypeID);  // совместимость (с учётом untyped)
         bool is_unsigned(TypeID) const;         // беззнаковый целочисленный тип?
         int bit_width(TypeID) const;            // ширина типа в битах (для приведений)
-        bool int_literal_fits(std::uint64_t, TypeID) const;  // влезает ли литерал в целевой int
+        bool int_literal_fits(std::uint64_t, TypeID, bool negated = false) const;  // влезает ли литерал в целевой int (negated — литерал под унарным минусом)
+        bool neg_literal_ctx = false;   // одноразовый флаг: операнд унарного минуса — прямой int-литерал
     };
 
 

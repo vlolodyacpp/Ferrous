@@ -9,6 +9,6 @@ fn main() -> int32 {
     let b: string = "abc";
     let c: string = "xyz";
     println(a == b);      // true
-    println(a == c);      // true
+    println(a == c);      // false
     return 0;
 }

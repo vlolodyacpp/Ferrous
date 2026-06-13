@@ -1,0 +1,16 @@
+// побочный эффект через мутацию глобального состояния невозможен (нет глобалов),
+// поэтому ленивость проверяем тем, что boom() (panic) не вызывается
+fn boom() -> bool { panic("should not be called"); }
+
+fn main() -> int32 {
+    // && : левый false → правый не вычисляется
+    if false && boom() { println(1); } else { println(0); }   // 0
+    // || : левый true → правый не вычисляется
+    if true || boom() { println(2); } else { println(3); }    // 2
+
+    // обычная (не закороченная) работа
+    let x: int32 = 5;
+    if x > 0 && x < 10 { println(4); }                         // 4
+    if x > 100 || x == 5 { println(5); }                       // 5
+    return 0;
+}

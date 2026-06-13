@@ -25,6 +25,7 @@ export namespace Parser {
         std::vector<Lexer::Token> tokens;
         std::size_t pos = 0;
         bool is_conditional = false;
+        bool panicking = false;          // panic-mode: подавляем каскад ошибок до синхронизации
         Semantic::DiagBag* diag = nullptr;
 
         Lexer::Token peek() const;
@@ -37,6 +38,7 @@ export namespace Parser {
         bool is_end() const;
 
         void report_error(const Lexer::Token&, std::string_view);
+        void synchronize();   // пропустить токены до границы инструкции/объявления
 
 
 

@@ -89,7 +89,8 @@ def main() -> int:
         # === ошибки компиляции ===
         print("== ошибки компиляции (ожидаем код != 0 + совпадение маркера @error) ==")
         compile_err = sorted(EXAMPLES.glob("err_sema_*.fer")) \
-            + sorted(EXAMPLES.glob("err_lex_*.fer"))
+            + sorted(EXAMPLES.glob("err_lex_*.fer")) \
+            + sorted(EXAMPLES.glob("err_parse_*.fer"))
         for f in compile_err:
             name = f.name
             want = error_marker(f)
@@ -110,7 +111,7 @@ def main() -> int:
         # === рантайм-ошибки ===
         print("== рантайм-ошибки (компиляция ок, запуск даёт код != 0) ==")
         runtime_err = [f for f in sorted(EXAMPLES.glob("err_*.fer"))
-                       if not f.name.startswith(("err_sema_", "err_lex_"))]
+                       if not f.name.startswith(("err_sema_", "err_lex_", "err_parse_"))]
         for f in runtime_err:
             name = f.name
             comp = run([str(fer), str(f), "-o", prog])

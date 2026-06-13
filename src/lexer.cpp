@@ -80,7 +80,7 @@ namespace Lexer {
         const std::size_t start_line = line;
         const std::size_t start_column = column;
 
-        while (!is_end() && (std::isalnum(peek()) || peek() == '_')) {
+        while (!is_end() && (std::isalnum(static_cast<unsigned char>(peek())) || peek() == '_')) {
             advance();
         }
 
@@ -105,7 +105,7 @@ namespace Lexer {
         if (peek() == '0' && (peek_next() == 'x' || peek_next() == 'X')) {
             advance();
             advance();          // 0x, 0X
-            while (std::isxdigit(peek())) advance();
+            while (std::isxdigit(static_cast<unsigned char>(peek()))) advance();
             is_hex_or_binary = true;
         } else if (peek() == '0' && (peek_next() == 'b' || peek_next() == 'B')) {
             advance();
@@ -114,13 +114,13 @@ namespace Lexer {
             is_hex_or_binary = true;
         }
         if (!is_hex_or_binary) {
-            while (std::isdigit(peek())) advance();
+            while (std::isdigit(static_cast<unsigned char>(peek()))) advance();
         }
 
         // float/exp
-        if ((peek() == '.' && std::isdigit(peek_next())) || peek_next() == 'e' || peek_next() == 'E') {
+        if ((peek() == '.' && std::isdigit(static_cast<unsigned char>(peek_next()))) || peek_next() == 'e' || peek_next() == 'E') {
             advance();
-            while (std::isdigit(peek())) advance();
+            while (std::isdigit(static_cast<unsigned char>(peek()))) advance();
             is_float = true;
         }
 
@@ -131,18 +131,18 @@ namespace Lexer {
             if (peek() == '+' || peek() == '-') {
                 advance();
             }
-            if (!std::isdigit(peek())) {
+            if (!std::isdigit(static_cast<unsigned char>(peek()))) {
                 diag.error(start_line, start_column,
                            "invalid float literal: expected digit after exponent");
                 return Token{TokenKind::Undefined, "err", start_line, start_column};
             }
-            while (std::isdigit(peek())) advance();
+            while (std::isdigit(static_cast<unsigned char>(peek()))) advance();
         }
 
         // суфикс
-        if (std::isalpha(peek())) {
+        if (std::isalpha(static_cast<unsigned char>(peek()))) {
             const std::size_t start_suf = pos;
-            while (std::isalpha(peek()) || std::isdigit(peek())) advance();
+            while (std::isalpha(static_cast<unsigned char>(peek())) || std::isdigit(static_cast<unsigned char>(peek()))) advance();
 
             if (const std::string_view suffix = source.substr(start_suf, pos - start_suf);
                 !suf.contains(suffix)) {
@@ -290,9 +290,9 @@ namespace Lexer {
             skip_comma_space();
             if (is_end()) break;
 
-            if (const char c = peek(); std::isalpha(c) || c == '_') {
+            if (const char c = peek(); std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
                 new_token = lex_ident_or_kw();
-            } else if (std::isdigit(c)) {
+            } else if (std::isdigit(static_cast<unsigned char>(c))) {
                 new_token = lex_num();
             } else if (c == '"') {
                 new_token = lex_str();

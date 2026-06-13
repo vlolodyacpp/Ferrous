@@ -72,6 +72,14 @@ namespace Codegen {
                 ? types->resolve_alias(it->second) : fb;
         }
 
+        // беззнаковый ли целочисленный тип (по TypeID)
+        bool is_unsigned_tid(Semantic::TypeID t) const {
+            for (auto k : { TokenKind::KwUint8, TokenKind::KwUint16,
+                            TokenKind::KwUint32, TokenKind::KwUint64 })
+                if (types->equal(t, types->builtin(k))) return true;
+            return false;
+        }
+
         // аннотации от семантики
         const Semantic::AnnotatedAST* aast = nullptr;
         const Semantic::TypeRegistry* types = nullptr;
@@ -723,6 +731,41 @@ namespace Codegen {
             return rhs;
         }
 
+        // short-circuit && / || : правый операнд вычисляется в отдельном блоке
+        if (n.op == TokenKind::OpAndAnd || n.op == TokenKind::OpOrOr) {
+            bool is_and = n.op == TokenKind::OpAndAnd;
+            llvm::Value* l = gen_expr(*n.lhs);
+            if (!l->getType()->isIntegerTy(1)){
+                l = B().CreateICmpNE(l, llvm::ConstantInt::get(l->getType(), 0), "tobool");
+            }
+
+            llvm::Function* fn = llvm::cast<llvm::Function>(cg_fn);
+            llvm::BasicBlock* lhs_bb = B().GetInsertBlock();
+            llvm::BasicBlock* rhs_bb  = llvm::BasicBlock::Create(C(), is_and ? "and.rhs" : "or.rhs", fn);
+            llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(C(), is_and ? "and.end" : "or.end", fn);
+
+            // && : если lhs ложь — сразу в merge (false); || : если истина — сразу в merge (true)
+            if (is_and) B().CreateCondBr(l, rhs_bb, merge_bb);
+            else        B().CreateCondBr(l, merge_bb, rhs_bb);
+
+            B().SetInsertPoint(rhs_bb);
+            llvm::Value* r = gen_expr(*n.rhs);
+
+            if (!r->getType()->isIntegerTy(1)){
+                r = B().CreateICmpNE(r, llvm::ConstantInt::get(r->getType(), 0), "tobool");
+            }
+            
+            llvm::BasicBlock* rhs_end = B().GetInsertBlock();
+            B().CreateBr(merge_bb);
+
+            B().SetInsertPoint(merge_bb);
+            llvm::PHINode* phi = B().CreatePHI(llvm::Type::getInt1Ty(C()), 2, is_and ? "and" : "or");
+            // путь короткого замыкания даёт константу: && → false, || → true
+            phi->addIncoming(llvm::ConstantInt::get(llvm::Type::getInt1Ty(C()), is_and ? 0 : 1), lhs_bb);
+            phi->addIncoming(r, rhs_end);
+            return phi;
+        }
+
         llvm::Value* lhs = gen_expr(*n.lhs);
         llvm::Value* rhs = gen_expr(*n.rhs);
         llvm::Type* ty = lhs->getType();
@@ -736,13 +779,9 @@ namespace Codegen {
             auto ft = llvm::cast<llvm::FunctionType>(function_types[name]);
             return B().CreateCall(ft, fn, a, lbl);
         };
-        // беззнаковый ли тип выражения
+        // беззнаковый ли тип выражения (по TypeID левого операнда)
         auto is_unsigned_t = [&](const Parser::Expr* ex) -> bool {
-            Semantic::TypeID t = expr_tid(ex, types->builtin(TokenKind::KwInt32));
-            for (auto k : { TokenKind::KwUint8, TokenKind::KwUint16,
-                            TokenKind::KwUint32, TokenKind::KwUint64 })
-                if (types->equal(t, types->builtin(k))) return true;
-            return false;
+            return is_unsigned_tid(expr_tid(ex, types->builtin(TokenKind::KwInt32)));
         };
         const bool is_unsigned = is_unsigned_t(n.lhs.get());
         // привести значение сдвига к ширине левого операнда (LLVM требует совпадения)
@@ -823,10 +862,7 @@ namespace Codegen {
                        : is_unsigned ? B().CreateICmpUGE(lhs, rhs, "ge")
                                      : B().CreateICmpSGE(lhs, rhs, "ge");
 
-            case TokenKind::OpAndAnd:
-                return B().CreateAnd(lhs, rhs, "and");
-            case TokenKind::OpOrOr:
-                return B().CreateOr(lhs, rhs, "or");
+            // && и || обрабатываются выше (short-circuit), сюда не доходят
 
             case TokenKind::OpAmp:
                 return B().CreateAnd(lhs, rhs, "band");
@@ -835,12 +871,18 @@ namespace Codegen {
             case TokenKind::OpCaret:
                 return B().CreateXor(lhs, rhs, "bxor");
             case TokenKind::OpShl:
-                return B().CreateShl(lhs, match_width(rhs, ty), "shl");
-            case TokenKind::OpShr:
-                // знаковый сдвиг hr)
+            case TokenKind::OpShr: {
+                // величина сдвига по модулю ширины типа: amt & (w-1).
+                llvm::Value* amt = match_width(rhs, ty);
+                unsigned w = ty->getIntegerBitWidth();
+                llvm::Value* mask = llvm::ConstantInt::get(ty, w - 1);
+                amt = B().CreateAnd(amt, mask, "shamt");
+                if (n.op == TokenKind::OpShl)
+                    return B().CreateShl(lhs, amt, "shl");
                 return is_unsigned_t(n.lhs.get())
-                    ? B().CreateLShr(lhs, match_width(rhs, ty), "lshr")
-                    : B().CreateAShr(lhs, match_width(rhs, ty), "ashr");
+                    ? B().CreateLShr(lhs, amt, "lshr")    // логический для беззнаковых
+                    : B().CreateAShr(lhs, amt, "ashr");   // арифметический для знаковых
+            }
 
             default:
                 return lhs;
@@ -852,27 +894,34 @@ namespace Codegen {
         return gen_expr(*n.inner);
     }
 
-    // приведение типа: SExt/Trunc/SIToFP/FPToSI по таблице
+    // приведение типа: знаковость берётся из TypeID источника/цели в аннотациях
     llvm::Value* Codegen::Impl::gen_cast(const Parser::CastExpr& n) {
         llvm::Value* src = gen_expr(*n.expr);
         Semantic::TypeID dst_tid = resolve_typeid(n.target, *types,
+            types->builtin(TokenKind::KwInt32));
+        Semantic::TypeID src_tid = expr_tid(n.expr.get(),
             types->builtin(TokenKind::KwInt32));
         llvm::Type* dst = to_llvm_type(dst_tid);
         llvm::Type* src_ty = src->getType();
 
         bool src_float = src_ty->isFloatingPointTy();
         bool dst_float = dst->isFloatingPointTy();
+        bool src_uns = is_unsigned_tid(src_tid);
+        bool dst_uns = is_unsigned_tid(dst_tid);
 
         // одинаковые типы
         if (src_ty == dst)
             return src;
 
-        // float → int
+        // float → int (беззнаковая цель → FPToUI)
         if (src_float && dst->isIntegerTy())
-            return B().CreateFPToSI(src, dst, "cast");
-        // int → float
+            return dst_uns ? B().CreateFPToUI(src, dst, "cast")
+                           : B().CreateFPToSI(src, dst, "cast");
+        // int → float (беззнаковый источник → UIToFP); bool (i1) — беззнаков
         if (src_ty->isIntegerTy() && dst_float)
-            return B().CreateSIToFP(src, dst, "cast");
+            return (src_uns || src_ty->isIntegerTy(1))
+                       ? B().CreateUIToFP(src, dst, "cast")
+                       : B().CreateSIToFP(src, dst, "cast");
         // float → float (fpext/fptrunc)
         if (src_float && dst_float) {
             if (src_ty->getPrimitiveSizeInBits() < dst->getPrimitiveSizeInBits())
@@ -880,9 +929,12 @@ namespace Codegen {
             return B().CreateFPTrunc(src, dst, "cast");
         }
 
-        // int → int (sext/trunc)
+        // int → int: расширение беззнакового/bool → ZExt, знакового → SExt;
+        // усечение (Trunc) одинаково для обоих
         if (src_ty->getIntegerBitWidth() < dst->getIntegerBitWidth())
-            return B().CreateSExt(src, dst, "cast");
+            return (src_uns || src_ty->isIntegerTy(1))
+                       ? B().CreateZExt(src, dst, "cast")
+                       : B().CreateSExt(src, dst, "cast");
         return B().CreateTrunc(src, dst, "cast");
     }
 
@@ -1122,8 +1174,17 @@ namespace Codegen {
                 };
                 return B().CreateGEP(aty, arr_ptr, gep, "idx");
             }
+            else if constexpr (std::is_same_v<T, Parser::GroupExpr>) {
+                // скобки прозрачны для lvalue
+                return gen_lvalue_ptr(*n.inner);
+            }
             else {
-                return nullptr;
+                // rvalue в позиции базы постфикса, материализуем значение во временный alloca и возвращаем его адрес
+                llvm::Value* v = gen_expr(e);
+                llvm::Value* tmp = create_entry_alloca(cg_fn, "rv.tmp",
+                    v->getType());
+                B().CreateStore(v, tmp);
+                return tmp;
             }
         }, e.node);
     }
@@ -1405,10 +1466,9 @@ namespace Codegen {
                 msg_ptr = B().CreateExtractValue(av[1], {0u});
                 msg_len = B().CreateExtractValue(av[1], {1u});
             } else {
-                const char* msg = "assertion failed";
-                msg_ptr = B().CreateGlobalString(msg, "assert_msg");
-                msg_len = llvm::ConstantInt::get(
-                    llvm::Type::getInt64Ty(C()), std::strlen(msg));
+                // форма без сообщения: пустая строка, rt не печатает "; "
+                msg_ptr = B().CreateGlobalString("", "assert_msg");
+                msg_len = llvm::ConstantInt::get(llvm::Type::getInt64Ty(C()), 0);
             }
             call_rt("__ferrous_assert_fail", {msg_ptr, msg_len, line_val});
             B().CreateUnreachable();

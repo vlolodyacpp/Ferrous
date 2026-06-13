@@ -285,13 +285,9 @@ namespace Semantic {
         return id;
     }
 
-    TypeID TypeRegistry::normalize(TypeID id) const {
-        return resolve_alias(id);
-    }
-
     // создание типа-массива
     TypeID TypeRegistry::array(TypeID elem, std::uint64_t size) {
-        TypeID norm = normalize(elem);
+        TypeID norm = resolve_alias(elem);
         ArrayKey key{norm, size};
         if (auto it = array_cache.find(key); it != array_cache.end()) {
             return it->second;
@@ -304,7 +300,7 @@ namespace Semantic {
 
     // поиск уже зарегистрированного массива без создания (const, для codegen)
     std::optional<TypeID> TypeRegistry::find_array(TypeID elem, std::uint64_t size) const {
-        ArrayKey key{normalize(elem), size};
+        ArrayKey key{resolve_alias(elem), size};
         if (auto it = array_cache.find(key); it != array_cache.end()) {
             return it->second;
         }
@@ -402,14 +398,14 @@ namespace Semantic {
 
     // получение структуры по TypeID
     const TypeRegistry::StructType* TypeRegistry::get_struct(TypeID id) const {
-        id = normalize(id);
+        id = resolve_alias(id);
         if (id.id >= entries.size()) return nullptr;
         return std::get_if<StructType>(&entries[id.id]);
     }
 
     // получение массива по TypeID
     const TypeRegistry::ArrayType* TypeRegistry::get_array(TypeID id) const {
-        id = normalize(id);
+        id = resolve_alias(id);
         if (id.id >= entries.size()) return nullptr;
         return std::get_if<ArrayType>(&entries[id.id]);
     }
@@ -516,10 +512,10 @@ namespace Semantic {
     // главный метод
     DiagBag Semantic::check(const std::vector<Parser::Decl>& decls) {
         install_builtins();          // встроенные функции
-        pass1(decls);                // регистрация имён
+        pass1_declare(decls);                // регистрация имён
         verify_main();               // проверка main
         current_scope = &root_scope;
-        pass2(decls, root_scope);    // проверка тел функций
+        pass2_check_bodies(decls, root_scope);    // проверка тел функций
         aast.types = &registry;
         return std::move(diag);
     }
@@ -555,9 +551,10 @@ namespace Semantic {
         TypeID char_ = registry.builtin(TokenKind::KwChar);
         TypeID void_ = registry.builtin(TokenKind::KwVoid);
 
-        // print, println для всех типов
+        // print, println для всех печатаемых типов (без void — иначе
+        // print(println(1)) проходит сему и валится верификацией LLVM)
         for (auto t : {int8, int16, int32, int64, uint8,
-            uint16, uint32, uint64, float32, float64, bool_, str, char_, void_ }) {
+            uint16, uint32, uint64, float32, float64, bool_, str, char_ }) {
             add_fn("print", {t}, void_);
             add_fn("println", {t}, void_);
         }
@@ -615,29 +612,37 @@ namespace Semantic {
     // проход 1: регистрация имён
 
     // корневой обход
-    void Semantic::pass1(const std::vector<Parser::Decl>& decls) {
-        pass1(decls, root_scope);
+    void Semantic::pass1_declare(const std::vector<Parser::Decl>& decls) {
+        pass1_declare(decls, root_scope);\
+
+        // глобальные проверки реестра 
+        verify_alias_cycles();
+        check_recursive_structs();
     }
 
-    void Semantic::pass1(const std::vector<Parser::Decl>& decls, Scope& scope) {
-        // сначала типы
-        pass1_types(decls, scope);
+    void Semantic::pass1_declare(const std::vector<Parser::Decl>& decls, Scope& scope) {
+        pass1_declare_types(decls, scope);
+        pass1_declare_fns(decls, scope);
+    }
+
+    // регистрация только функций (+ рекурсия в namespace)
+    void Semantic::pass1_declare_fns(const std::vector<Parser::Decl>& decls, Scope& scope) {
         for (const auto& d : decls) {
             if (auto* fn = std::get_if<Parser::FnDecl>(&d.node)) {
-                pass1_fn(scope, *fn, d.line, d.column);
+                pass1_declare_fn(scope, *fn, d.line, d.column);
             } else if (auto* ns = std::get_if<Parser::NameSpaceDecl>(&d.node)) {
                 Scope& ns_scope = ensure_namespace(scope, ns->name);
-                pass1(ns->decls, ns_scope);
+                pass1_declare_fns(ns->decls, ns_scope);
             }
         }
     }
 
     // регистрация типов
-    void Semantic::pass1_types(const std::vector<Parser::Decl>& decls) {
-        pass1_types(decls, root_scope);
+    void Semantic::pass1_declare_types(const std::vector<Parser::Decl>& decls) {
+        pass1_declare_types(decls, root_scope);
     }
 
-    void Semantic::pass1_types(const std::vector<Parser::Decl>& decls, Scope& scope) {
+    void Semantic::pass1_declare_types(const std::vector<Parser::Decl>& decls, Scope& scope) {
         // подпроход 1: заглушки структур и псевдонимов
         for (const auto& d : decls) {
             if (auto* st = std::get_if<Parser::StructDecl>(&d.node)) {
@@ -662,7 +667,7 @@ namespace Semantic {
                 }
             } else if (auto* ns = std::get_if<Parser::NameSpaceDecl>(&d.node)) {
                 Scope& ns_scope = ensure_namespace(scope, ns->name);
-                pass1_types(ns->decls, ns_scope);
+                pass1_declare_types(ns->decls, ns_scope);
             }
         }
         // подпроход 2: цели псевдонимов
@@ -674,9 +679,6 @@ namespace Semantic {
                 }
             }
         }
-
-        // циклы синонимов разрываем до резолва полей структур
-        verify_alias_cycles();
 
         // подпроход 3: поля структур
         for (const auto& d : decls) {
@@ -700,9 +702,6 @@ namespace Semantic {
                 registry.finalize_struct(st -> name, std::move(fields));
             }
         }
-
-        // проверка рекурсивных структур
-        check_recursive_structs();
     }
 
     // проверка циклической вложенности структур
@@ -754,13 +753,21 @@ namespace Semantic {
             std::vector<TypeID> path;
             std::unordered_set<TypeID, TypeIdHash> on_path;
             TypeID cur = start;
+            bool broken = false;          // цепочка оборвалась на нерезолвнутой цели
             while (registry.is_alias(cur) && !on_path.contains(cur)) {
+
                 on_path.insert(cur);
                 path.push_back(cur);
                 auto nxt = registry.alias_target(cur);
-                if (!nxt) break;          // нерезолвнутая цель — не цикл
+
+                if (!nxt) { 
+                    broken = true; 
+                    break; 
+                }   // нерезолвнутая цель — не цикл
                 cur = *nxt;
             }
+            // оборвалась на unknown type — не цикл (избегаем ложного "A -> A")
+            if (broken) continue;
             // цикл: вернулись на узел, уже лежащий в пути
             if (!registry.is_alias(cur) || !on_path.contains(cur)) continue;
 
@@ -783,7 +790,7 @@ namespace Semantic {
     }
 
     // регистрация сигнатуры функции
-    void Semantic::pass1_fn(Scope& scope, const Parser::FnDecl& fn,
+    void Semantic::pass1_declare_fn(Scope& scope, const Parser::FnDecl& fn,
                             std::size_t line, std::size_t col) {
         cur_line = line; cur_col = col;
         // типы параметров
@@ -928,6 +935,15 @@ namespace Semantic {
         return std::visit([&](const auto& n) -> bool {
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Parser::ReturnStmt>) return true;
+            // вызов panic/exit расходится (управление не возвращается)
+            if constexpr (std::is_same_v<T, Parser::ExprStmt>) {
+                if (const auto* call = std::get_if<Parser::CallExpr>(&n.expr->node)) {
+                    if (const auto* id = std::get_if<Parser::IdentExpr>(&call->call->node)) {
+                        if (id->value == "panic" || id->value == "exit") return true;
+                    }
+                }
+                return false;
+            }
             if constexpr (std::is_same_v<T, Parser::BlockStmt>) {
                 for (const auto& s : n.elems) {
                     if (always_returns(s)) return true;
@@ -1033,7 +1049,7 @@ namespace Semantic {
                         case IntSuffix::U32: fixed = registry.builtin(TokenKind::KwUint32); break;
                         case IntSuffix::U64: fixed = registry.builtin(TokenKind::KwUint64); break;
                     }
-                    if (!int_literal_fits(parsed->value, fixed)) {
+                    if (!int_literal_fits(parsed->value, fixed, neg_literal_ctx)) {
                         diag.error(e.line, e.column, "integer literal '" + std::string(n.value)
                             + "' out of range for type " + registry.name(fixed));
                         return registry.error_type();
@@ -1045,7 +1061,7 @@ namespace Semantic {
                     TypeID exp_norm = registry.resolve_alias(*expected);
                     // целочисленный контекст — проверяем диапазон литерала
                     if (registry.is_fixed_int(exp_norm)) {
-                        if (!int_literal_fits(parsed->value, exp_norm)) {
+                        if (!int_literal_fits(parsed->value, exp_norm, neg_literal_ctx)) {
                             diag.error(e.line, e.column, "integer literal '" + std::string(n.value)
                                 + "' out of range for type " + registry.name(*expected));
                             return registry.error_type();
@@ -1067,6 +1083,17 @@ namespace Semantic {
             // float-литерал
             if constexpr (std::is_same_v<T, Parser::LitFloatExpr>) {
                 auto parsed = parse_float_lexeme(n.value);
+                {
+                    double dv;
+                    const char* b = parsed.core.data();
+                    const char* en = b + parsed.core.size();
+                    auto [ptr, ec] = std::from_chars(b, en, dv);
+                    if (ec != std::errc{} || ptr != en) {
+                        diag.error(e.line, e.column, "invalid float literal '"
+                            + std::string(n.value) + "'");
+                        return registry.error_type();
+                    }
+                }
                 if (parsed.suffix) {
                     // с суффиксом — конкретный тип (f32/f64)
                     return *parsed.suffix == FloatSuffix::F32
@@ -1177,7 +1204,14 @@ namespace Semantic {
 
             // унарные операторы
             if constexpr (std::is_same_v<T, Parser::UnaryExpr>) {
+                    bool direct_lit = n.op == TokenKind::OpMinus
+                        && std::holds_alternative<Parser::LitIntExpr>(n.operand->node);
+                    bool saved_neg = neg_literal_ctx;
+
+                    if (direct_lit) neg_literal_ctx = true;
                     TypeID inner = check_rec(*n.operand, expected);
+
+                    neg_literal_ctx = saved_neg;
                 if (registry.equal(inner, registry.error_type())) {
                     return registry.error_type();
                 }
@@ -1429,6 +1463,11 @@ namespace Semantic {
                 if ((is_num(src_norm) || is_un(src_norm)) && (is_num(dst_norm) || is_un(dst_norm))) {
                     return dst;
                 }
+                // bool → целое (true→1, false→0); обратное (int as bool) запрещено
+                if (registry.equal(src_norm, registry.builtin(TokenKind::KwBool))
+                    && registry.is_fixed_int(dst_norm)) {
+                    return dst;
+                }
                 diag.error(e.line, e.column, "invalid cast from " + registry.name(src) + " to " + registry.name(dst));
                 return registry.error_type();
             }
@@ -1587,11 +1626,17 @@ namespace Semantic {
             // литерал структуры
             if constexpr (std::is_same_v<T, Parser::StructLitExpr>) {
                 Symbol* sym = current_scope->lookup_chain(n.name);
-                if (!sym || sym->kind != SymbolKind::Struct) {
+                // тип-реестр плоский: имя структуры из namespace доступно по голому имени 
+                TypeID st_id;
+                if (sym && sym->kind == SymbolKind::Struct) {
+                    st_id = std::get<TypeSymbol>(sym->data).id;
+                } else if (auto rid = registry.by_name(n.name);
+                           rid && registry.get_struct(*rid)) {
+                    st_id = *rid;
+                } else {
                     diag.error(e.line, e.column, "unknown struct '" + std::string(n.name) + "'");
                     return registry.error_type();
                 }
-                TypeID st_id = std::get<TypeSymbol>(sym->data).id;
                 const auto* st = registry.get_struct(st_id);
                 if (!st) {
                     return registry.error_type();
@@ -1803,7 +1848,7 @@ namespace Semantic {
     }
 
     // проход 2: проверка тел функций
-    void Semantic::pass2(const std::vector<Parser::Decl>& decls, Scope& scope) {
+    void Semantic::pass2_check_bodies(const std::vector<Parser::Decl>& decls, Scope& scope) {
         for (const auto& d : decls) {
             std::visit([&](const auto& n) {
                 using T = std::decay_t<decltype(n)>;
@@ -1812,7 +1857,7 @@ namespace Semantic {
                 } else if constexpr (std::is_same_v<T, Parser::NameSpaceDecl>) {
                     Symbol* ns_sym = scope.lookup_local(n.name);
                     if (ns_sym && ns_sym->kind == SymbolKind::Namespace) {
-                        pass2(n.decls, *std::get<NamespaceSymbol>(ns_sym->data).scope);
+                        pass2_check_bodies(n.decls, *std::get<NamespaceSymbol>(ns_sym->data).scope);
                     }
                 }
             }, d.node);
@@ -1903,15 +1948,22 @@ namespace Semantic {
     }
 
     // помещается ли беззнаковая величина литерала в целевой целочисленный тип
-    bool Semantic::int_literal_fits(std::uint64_t value, TypeID type) const {
+    bool Semantic::int_literal_fits(std::uint64_t value, TypeID type, bool negated) const {
         TypeID norm = registry.resolve_alias(type);
         int w = bit_width(norm);
         if (w <= 0 || w > 64) return true;     // не целочисленный тип
-        if (w == 64) return true;
         if (is_unsigned(norm)) {
+            if (negated) return value == 0;    // -0 единственное беззнаковое под минусом
+            if (w == 64) return true;          // весь диапазон uint64
             return value < (std::uint64_t{1} << w);
         }
-        return value <= (std::uint64_t{1} << (w - 1));
+        // знаковый: позитив до 2^(w-1)-1; под минусом — до 2^(w-1)
+        if (w == 64) {
+            std::uint64_t max = std::uint64_t{1} << 63;        // 2^63
+            return negated ? value <= max : value < max;       // -2^63 .. 2^63-1
+        }
+        std::uint64_t bound = std::uint64_t{1} << (w - 1);     // 2^(w-1)
+        return negated ? value <= bound : value < bound;
     }
 
     // печать диагностик

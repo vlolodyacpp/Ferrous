@@ -1,0 +1,5 @@
+// @error: recursive struct
+namespace m {
+    struct Node { value: int32, next: Node }   // бесконечный размер, ровно одна диагностика
+}
+fn main() -> int32 { return 0; }

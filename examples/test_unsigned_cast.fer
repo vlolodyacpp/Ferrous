@@ -1,0 +1,27 @@
+fn main() -> int32 {
+    // беззнаковое расширение: 200 не должно стать -56
+    let a: uint8 = 200;
+    println(a as int32);              // 200
+
+    let c: uint32 = 4000000000;
+    println(c as int64);              // 4000000000
+
+    // усечение знакового → беззнаковый wrap
+    let d: int32 = 300;
+    println(d as uint8);              // 44
+
+    // float → беззнаковое
+    let f: float64 = 250.0;
+    println(f as uint8);              // 250
+
+    // bool → целое
+    let t: bool = true;
+    let fl: bool = false;
+    println(t as int32);              // 1
+    println(fl as int32);             // 0
+
+    // беззнаковое → float
+    let u: uint32 = 4000000000;
+    println(u as float64);            // 4000000000
+    return 0;
+}

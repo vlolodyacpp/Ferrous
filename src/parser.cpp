@@ -101,8 +101,40 @@ namespace Parser {
     }
 
     void Parser::report_error(const Lexer::Token& t, std::string_view message) {
+        // panic-mode: после первой ошибки молчим, пока не синхронизируемся на границе инструкции 
+        if (panicking) {
+            return;
+        }
+        panicking = true;
         if (diag) {
             diag->error(t.line, t.column, std::string(message));
+        }
+    }
+
+    // пропустить токены до надёжной точки перезапуска
+    void Parser::synchronize() {
+        panicking = false;
+        while (!is_end()) {
+            if (pos > 0 && tokens[pos - 1].kind == TokenKind::SepSemicolon) {
+                return;                       // только что прошли конец инструкции
+            }
+            switch (peek().kind) {
+                case TokenKind::KwLet:
+                case TokenKind::KwReturn:
+                case TokenKind::KwIf:
+                case TokenKind::KwWhile:
+                case TokenKind::KwBreak:
+                case TokenKind::KwContinue:
+                case TokenKind::KwFn:
+                case TokenKind::KwStruct:
+                case TokenKind::KwType:
+                case TokenKind::KwNamespace:
+                case TokenKind::SepLBrace:
+                case TokenKind::SepRBrace:
+                    return;                   // начало нового стейтмента/декла или конец блока
+                default:
+                    advance();
+            }
         }
     }
 
@@ -486,7 +518,11 @@ namespace Parser {
         while (!check(TokenKind::SepRBrace) && !is_end()) {
             const std::size_t before = pos;
             elems.push_back(parse_stmt());
-            if (pos == before) advance();  // страховка от зацикливания при ошибке
+            if (panicking) {
+                synchronize();             // оправиться от ошибки, не плодя каскад
+            } else if (pos == before) {
+                advance();                 // страховка от зацикливания
+            }
         }
         expect(TokenKind::SepRBrace);
         return BlockStmt{std::move(elems)};
@@ -668,7 +704,11 @@ namespace Parser {
         while (!is_end()) {
             const std::size_t before = pos;
             decls.push_back(parse_decl());
-            if (pos == before) advance();  // страховка от зацикливания при ошибке
+            if (panicking) {
+                synchronize();             // оправиться от ошибки, не плодя каскад
+            } else if (pos == before) {
+                advance();                 // страховка от зацикливания
+            }
         }
         return decls;
     }

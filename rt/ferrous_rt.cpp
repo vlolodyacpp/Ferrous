@@ -51,9 +51,10 @@ extern "C" {
     }
 
     void __ferrous_assert_fail(const char* msg, std::int64_t len, std::int64_t line) {
-        std::cerr << "runtime error: assertion failed: "
-                  << std::string_view(msg, static_cast<std::size_t>(len))
-                  << " at line " << line << '\n';
+        std::cerr << "runtime error: assertion failed";
+        if (len > 0)
+            std::cerr << ": " << std::string_view(msg, static_cast<std::size_t>(len));
+        std::cerr << " at line " << line << '\n';
         std::exit(1);
     }
 
