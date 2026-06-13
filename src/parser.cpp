@@ -330,20 +330,34 @@ namespace Parser {
         while (true) {
             auto k = peek().kind;
             if (k == TokenKind::SepLParen) {
-                // f(a, b, c)
+                // f(a, b, c) или f(a, name=expr)  
                 std::size_t call_line = peek().line;
                 advance();
                 std::vector<Expr> args;
-                if (!check(TokenKind::SepRParen)) {
+                std::vector<std::string_view> arg_names;
+                // разбор одного аргумента: при `IDENT "="` — именованный
+                auto parse_arg = [&]() {
+                    std::string_view name;   // пусто = позиционный
+                    if (check(TokenKind::Ident) && peek_next().kind == TokenKind::OpEq) {
+                        name = peek().lexeme;
+                        advance();   // IDENT
+                        advance();   // '='
+                    }
                     args.push_back(parse_expr(0));
+                    arg_names.push_back(name);
+                };
+                if (!check(TokenKind::SepRParen)) {
+                    parse_arg();
                     while (match(TokenKind::SepComma)) {
-                        args.push_back(parse_expr(0));
+                        if (check(TokenKind::SepRParen)) break;   // trailing comma
+                        parse_arg();
                     }
                 }
                 expect(TokenKind::SepRParen);
                 lhs = Expr{CallExpr{
                     std::make_unique<Expr>(std::move(lhs)),
                     std::move(args),
+                    std::move(arg_names),
                     call_line
                 }};
                 continue;
@@ -609,18 +623,22 @@ namespace Parser {
 
         expect(TokenKind::SepLParen);
 
-        // Param { "," Param } [ "," ] ;
-        std::vector<std::pair<std::string_view, TypeRef>> params;
-        if (true) {
-            while (!check(TokenKind::SepRParen)) {
-                Lexer::Token param_name = expect(TokenKind::Ident);
-                expect (TokenKind::SepColon);
-                auto param_type = parse_type();
-                params.emplace_back(param_name.lexeme, std::move(param_type));
-
-                if (!match(TokenKind::SepComma)) break;
-                if (check(TokenKind::SepRParen)) break;
+        // Param { "," Param } [ "," ] ;  Param = IDENT ":" Type [ "=" Expr ] 
+        std::vector<Param> params;
+        while (!check(TokenKind::SepRParen)) {
+            Lexer::Token param_name = expect(TokenKind::Ident);
+            expect (TokenKind::SepColon);
+            auto param_type = parse_type();
+            std::unique_ptr<Expr> default_value = nullptr;
+            if (match(TokenKind::OpEq)) {
+                default_value = std::make_unique<Expr>(parse_expr(0));
             }
+            params.push_back(Param{
+                param_name.lexeme, std::move(param_type), std::move(default_value)
+            });
+
+            if (!match(TokenKind::SepComma)) break;
+            if (check(TokenKind::SepRParen)) break;
         }
 
         expect(TokenKind::SepRParen);

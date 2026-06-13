@@ -1,0 +1,7 @@
+// @error: unknown parameter name 'z'
+fn f(x: int32, y: int32) -> int32 {
+    return x + y;
+}
+fn main() -> int32 {
+    return f(1, z=2);    // у f нет параметра z
+}

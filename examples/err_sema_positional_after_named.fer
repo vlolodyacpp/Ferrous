@@ -1,0 +1,7 @@
+// @error: positional argument after named argument
+fn f(x: int32, y: int32) -> int32 {
+    return x + y;
+}
+fn main() -> int32 {
+    return f(x=1, 2);    // позиционный после именованного
+}

@@ -1,0 +1,7 @@
+// @error: duplicate argument for parameter 'y'
+fn f(x: int32, y: int32) -> int32 {
+    return x + y;
+}
+fn main() -> int32 {
+    return f(1, y=2, y=3);    // y задан дважды
+}

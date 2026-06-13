@@ -460,8 +460,8 @@ namespace Codegen {
                 // манглинг: name + типы параметров для перегрузок
                 std::vector<Semantic::TypeID> ptids;
                 std::vector<llvm::Type*> param_types;
-                for (const auto& [pname, ptype] : fn->params) {
-                    auto tid = resolve_typeid(ptype, *types,
+                for (const auto& p : fn->params) {
+                    auto tid = resolve_typeid(p.type, *types,
                         types->builtin(TokenKind::KwVoid));
                     ptids.push_back(tid);
                     param_types.push_back(to_llvm_type(tid));
@@ -976,14 +976,25 @@ namespace Codegen {
             return i32_zero();
         }
 
-        // аргументы (значения + типы для манглинга)
+        // аргументы (значения + типы для манглинга). При наличии call_slots (A.2.9)
+        // генерим в ПОРЯДКЕ ПАРАМЕТРОВ: позиционные/именованные на местах + дефолты.
         std::vector<llvm::Value*> args;
         std::vector<Semantic::TypeID> arg_tids;
-        for (const auto& arg : n.args) {
-            args.push_back(gen_expr(arg));
-            auto it = aast->expr_type.find(&arg);
-            arg_tids.push_back(it != aast->expr_type.end()
-                ? it->second : types->builtin(TokenKind::KwVoid));
+        auto type_of = [&](const Parser::Expr* ex) -> Semantic::TypeID {
+            auto it = aast->expr_type.find(ex);
+            return it != aast->expr_type.end()
+                ? it->second : types->builtin(TokenKind::KwVoid);
+        };
+        if (auto slots = aast->call_slots.find(&n); slots != aast->call_slots.end()) {
+            for (const Parser::Expr* slot : slots->second) {
+                args.push_back(gen_expr(*slot));
+                arg_tids.push_back(type_of(slot));
+            }
+        } else {
+            for (const auto& arg : n.args) {
+                args.push_back(gen_expr(arg));
+                arg_tids.push_back(type_of(&arg));
+            }
         }
 
         // встроенные функции
@@ -1513,8 +1524,8 @@ namespace Codegen {
         } else {
             // тот же манглинг по типам, что и в declare/gen_call
             std::vector<Semantic::TypeID> ptids;
-            for (const auto& [pname, ptype] : fn.params)
-                ptids.push_back(resolve_typeid(ptype, *types,
+            for (const auto& p : fn.params)
+                ptids.push_back(resolve_typeid(p.type, *types,
                     types->builtin(TokenKind::KwVoid)));
             std::string mangled = mangle(name, ptids);
             auto it = functions.find(mangled);
@@ -1540,13 +1551,13 @@ namespace Codegen {
         push_cg_scope();
 
         for (unsigned i = 0; i < fn.params.size(); ++i) {
-            const auto& [pname, ptype] = fn.params[i];
+            const std::string pname(fn.params[i].name);
             llvm::Argument* param = fn_v->getArg(i);
             llvm::Value* alloca = create_entry_alloca(cg_fn,
-                std::string(pname), param->getType());
+                pname, param->getType());
             B().CreateStore(param, alloca);
-            cg_current_scope->vars[std::string(pname)] = alloca;
-            cg_current_scope->var_types[std::string(pname)] = param->getType();
+            cg_current_scope->vars[pname] = alloca;
+            cg_current_scope->var_types[pname] = param->getType();
         }
 
         // скоуп тела

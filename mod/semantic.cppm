@@ -152,6 +152,9 @@ export namespace Semantic {
         std::unordered_map<const Parser::Expr*, TypeID> expr_type;
         std::unordered_map<const Parser::LetStmt*, TypeID> let_type;
         std::unordered_map<const Parser::CallExpr*, std::size_t> resolved_overload;
+        // A.2.9: полный список выражений-аргументов в ПОРЯДКЕ ПАРАМЕТРОВ
+        // (позиционные/именованные на своих местах + значения по умолчанию).
+        std::unordered_map<const Parser::CallExpr*, std::vector<const Parser::Expr*>> call_slots;
         const TypeRegistry* types = nullptr;
     };
 

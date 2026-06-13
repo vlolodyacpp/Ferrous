@@ -1,0 +1,7 @@
+// @error: without default value follows a parameter with a default value
+fn f(a: int32 = 1, b: int32) -> int32 {  // дефолт не в хвосте
+    return a + b;
+}
+fn main() -> int32 {
+    return f(1, 2);
+}

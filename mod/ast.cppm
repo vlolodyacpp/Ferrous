@@ -88,9 +88,11 @@ export namespace Parser {
         TypeRef target;
     };
 
-    struct CallExpr { // f(1, 2)
+    struct CallExpr { // f(1, 2) или f(1, c=3)
         std::unique_ptr<Expr> call;
         std::vector<Expr> args;
+        // параллельно args: имя именованного аргумента (A.2.9); пустое = позиционный
+        std::vector<std::string_view> arg_names;
         std::size_t line = 0;   // строка вызова (для panic/assert)
     };
 
@@ -170,9 +172,16 @@ export namespace Parser {
     };
 
 
+    // параметр функции: имя, тип и необязательное значение по умолчанию (A.2.9)
+    struct Param {
+        std::string_view name;
+        TypeRef type;
+        std::unique_ptr<Expr> default_value;  // nullptr = нет значения по умолчанию
+    };
+
     struct FnDecl {             // fn(param1, ...) -> type {}
         std::string_view name;
-        std::vector<std::pair<std::string_view, TypeRef>> params;
+        std::vector<Param> params;
         std::optional<TypeRef> return_type;
         BlockStmt body;
     };

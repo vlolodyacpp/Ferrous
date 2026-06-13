@@ -201,7 +201,11 @@ namespace Printer {
                 print_fn(*n.call, os, depth + 2);
                 print_indent(os, depth + 1); os << "args (" << n.args.size() << "):\n";
                 for (std::size_t i = 0; i < n.args.size(); ++i) {
-                    print_indent(os, depth + 2); os << "[" << i << "]:\n";
+                    print_indent(os, depth + 2);
+                    if (i < n.arg_names.size() && !n.arg_names[i].empty())
+                        os << "[" << i << "] " << n.arg_names[i] << "=:\n";
+                    else
+                        os << "[" << i << "]:\n";
                     print_fn(n.args[i], os, depth + 3);
                 }
             } else if constexpr (std::is_same_v<T, Parser::IndexExpr>) {
@@ -331,9 +335,13 @@ namespace Printer {
                 os << "Fn " << n.name << '\n';
                 print_indent(os, depth + 1);
                 os << "params (" << n.params.size() << "):\n";
-                for (const auto& [pn, pt] : n.params) {
-                    print_indent(os, depth + 2); os << pn << ":\n";
-                    print_type(pt, os, depth + 3);
+                for (const auto& p : n.params) {
+                    print_indent(os, depth + 2); os << p.name << ":\n";
+                    print_type(p.type, os, depth + 3);
+                    if (p.default_value) {
+                        print_indent(os, depth + 3); os << "default:\n";
+                        print_expr(*p.default_value, os, depth + 4, annotations);
+                    }
                 }
                 if (n.return_type) {
                     print_indent(os, depth + 1); os << "return:\n";
