@@ -10,6 +10,8 @@ export import Ferrous.Semantic;
 
 export namespace Parser {
 
+    // Парсер: строит AST из потока токенов методом рекурсивного спуска
+    // с Pratt-разбором выражений; диагностики накапливает в DiagBag.
     class Parser {
     public:
 

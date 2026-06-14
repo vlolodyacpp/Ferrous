@@ -1,0 +1,8 @@
+// @error: mixed numeric types require explicit cast
+// A.1.8: смешение знакового и беззнакового в операторе запрещено — нужен `as`
+fn main() -> int32 {
+    let s: int32 = 5;
+    let u: uint32 = 7;
+    let r = s + u;           // int32 + uint32 — смена знака неявно нельзя
+    return 0;
+}

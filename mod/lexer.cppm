@@ -11,6 +11,8 @@ import Ferrous.Semantic;
 
 export namespace Lexer {
 
+    // Лексер: первая фаза pipeline. Преобразует исходный текст в поток
+    // токенов, пропуская комментарии; о лексических ошибках сообщает в DiagBag.
     class Lexer {
     public:
         Lexer(const std::string_view str, Semantic::DiagBag& diag)

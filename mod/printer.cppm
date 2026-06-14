@@ -8,6 +8,8 @@ export import Ferrous.Token;
 export import Ferrous.AST;
 export import Ferrous.Semantic;
 
+// Printer: читаемая печать внутренних представлений (токены, AST,
+// AST с аннотациями типов) для отладочных флагов --dump-*.
 export namespace Printer {
     std::string_view kind_name(Lexer::TokenKind);
     void print_tokens(const std::vector<Lexer::Token>&, std::ostream&);

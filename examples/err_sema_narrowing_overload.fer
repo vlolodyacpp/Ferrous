@@ -1,0 +1,6 @@
+// @error: no matching overload
+fn f(x: int8) -> int32 { return x as int32; }
+fn main() -> int32 {
+    let big: int32 = 300;
+    return f(big);    // сужение int32 → int8 при разрешении перегрузки запрещено
+}

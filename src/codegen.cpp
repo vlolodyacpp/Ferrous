@@ -158,6 +158,8 @@ namespace Codegen {
                                std::size_t line);
         llvm::Value* gen_group(const Parser::GroupExpr& n);
         llvm::Value* gen_cast(const Parser::CastExpr& n);
+        llvm::Value* gen_num_cast(llvm::Value* src, Semantic::TypeID from,
+                                  Semantic::TypeID to);
         llvm::Value* gen_call(const Parser::CallExpr& n);
         llvm::Value* gen_index(const Parser::IndexExpr& n);
         llvm::Value* gen_field(const Parser::FieldExpr& n);
@@ -213,9 +215,11 @@ namespace Codegen {
                 std::string_view s = t.size;
                 int base = 10;
                 if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
-                    s = s.substr(2); base = 16;
+                    s = s.substr(2);
+                    base = 16;
                 } else if (s.size() > 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B')) {
-                    s = s.substr(2); base = 2;
+                    s = s.substr(2);
+                    base = 2;
                 }
                 std::uint64_t size = 0;
                 std::from_chars(s.data(), s.data() + s.size(), size, base);
@@ -236,9 +240,12 @@ namespace Codegen {
 
     // освобождение LLVM-ресурсов
     Codegen::Impl::~Impl() {
-        delete builder; builder = nullptr;
-        delete mod;     mod = nullptr;
-        delete ctx;     ctx = nullptr;
+        delete builder;
+        builder = nullptr;
+        delete mod;
+        mod = nullptr;
+        delete ctx;
+        ctx = nullptr;
     }
 
     // преобразование типа в LLVM-тип
@@ -491,7 +498,7 @@ namespace Codegen {
 
 
     llvm::Value* Codegen::Impl::gen_expr(const Parser::Expr& e) {
-        return std::visit([&](const auto& n) -> llvm::Value* {
+        llvm::Value* v = std::visit([&](const auto& n) -> llvm::Value* {
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Parser::LitIntExpr>)
                 return gen_lit_int(n, e);
@@ -529,6 +536,11 @@ namespace Codegen {
                 return gen_struct_lit(n);
             return i32_zero();
         }, e.node);
+        
+        // неявные преобразования
+        if (auto it = aast->coerce.find(&e); it != aast->coerce.end())
+            v = gen_num_cast(v, it->second.first, it->second.second);
+        return v;
     }
 
 
@@ -914,20 +926,18 @@ namespace Codegen {
         return gen_expr(*n.inner);
     }
 
-    // приведение типа: знаковость берётся из TypeID источника/цели в аннотациях
-    llvm::Value* Codegen::Impl::gen_cast(const Parser::CastExpr& n) {
-        llvm::Value* src = gen_expr(*n.expr);
-        Semantic::TypeID dst_tid = resolve_typeid(n.target, *types,
-            types->builtin(TokenKind::KwInt32));
-        Semantic::TypeID src_tid = expr_tid(n.expr.get(),
-            types->builtin(TokenKind::KwInt32));
-        llvm::Type* dst = to_llvm_type(dst_tid);
+    // числовое приведение значения src из типа from в тип to.
+    // Знаковость берётся из TypeID.
+    llvm::Value* Codegen::Impl::gen_num_cast(llvm::Value* src,
+                                             Semantic::TypeID from,
+                                             Semantic::TypeID to) {
+        llvm::Type* dst = to_llvm_type(to);
         llvm::Type* src_ty = src->getType();
 
         bool src_float = src_ty->isFloatingPointTy();
         bool dst_float = dst->isFloatingPointTy();
-        bool src_uns = is_unsigned_tid(src_tid);
-        bool dst_uns = is_unsigned_tid(dst_tid);
+        bool src_uns = is_unsigned_tid(from);
+        bool dst_uns = is_unsigned_tid(to);
 
         // одинаковые типы
         if (src_ty == dst)
@@ -958,6 +968,19 @@ namespace Codegen {
         return B().CreateTrunc(src, dst, "cast");
     }
 
+    // приведение типа `expr as Type`: типы источника/цели берутся из аннотаций
+    llvm::Value* Codegen::Impl::gen_cast(const Parser::CastExpr& n) {
+        llvm::Value* src = gen_expr(*n.expr);
+
+        Semantic::TypeID dst_tid = resolve_typeid(n.target, *types,
+            types->builtin(TokenKind::KwInt32));
+
+        Semantic::TypeID src_tid = expr_tid(n.expr.get(),
+            types->builtin(TokenKind::KwInt32));
+            
+        return gen_num_cast(src, src_tid, dst_tid);
+    }
+
 
     // вызов функции: разрешение имени → встроенная или пользовательская
     llvm::Value* Codegen::Impl::gen_call(const Parser::CallExpr& n) {
@@ -986,9 +1009,19 @@ namespace Codegen {
                 ? it->second : types->builtin(TokenKind::KwVoid);
         };
         if (auto slots = aast->call_slots.find(&n); slots != aast->call_slots.end()) {
-            for (const Parser::Expr* slot : slots->second) {
-                args.push_back(gen_expr(*slot));
-                arg_tids.push_back(type_of(slot));
+            // типы параметров выбранной перегрузки — источник правды для манглинга (A.3.1)
+            auto stit = aast->call_slot_types.find(&n);
+            const std::vector<Semantic::TypeID>* slot_types =
+                stit != aast->call_slot_types.end() ? &stit->second : nullptr;
+            const auto& slot_exprs = slots->second;
+            for (std::size_t j = 0; j < slot_exprs.size(); ++j) {
+                const Parser::Expr* slot = slot_exprs[j];
+                // неявное приведение аргумента (A.1.8/A.3.1) вставляется
+                // централизованно в gen_expr по карте coerce
+                llvm::Value* v = gen_expr(*slot);
+                args.push_back(v);
+                // манглинг — по типу параметра (для приведённых это целевой тип)
+                arg_tids.push_back(slot_types ? (*slot_types)[j] : type_of(slot));
             }
         } else {
             for (const auto& arg : n.args) {

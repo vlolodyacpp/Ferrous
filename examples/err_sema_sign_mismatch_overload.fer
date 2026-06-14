@@ -1,0 +1,6 @@
+// @error: no matching overload
+fn f(x: uint32) -> int32 { return 1; }
+fn main() -> int32 {
+    let s: int32 = 5;
+    return f(s);    // знак↔беззнак (int32 → uint32) при перегрузке не приводится
+}

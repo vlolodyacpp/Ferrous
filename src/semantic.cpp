@@ -20,33 +20,6 @@ namespace Semantic {
 
     using TokenKind = Lexer::TokenKind;
 
-    // декодер escape для строковых и символьных литералов.
-    std::optional<std::string> decode_escapes(std::string_view raw, char* bad) {
-        std::string out;
-        out.reserve(raw.size());
-        for (std::size_t i = 0; i < raw.size(); ++i) {
-            const char c = raw[i];
-            if (c != '\\') { out.push_back(c); continue; }
-            if (i + 1 >= raw.size()) {           // одинокий '\' в конце
-                if (bad) *bad = '\0';
-                return std::nullopt;
-            }
-            switch (const char esc = raw[++i]) {
-                case 'n':  out.push_back('\n'); break;
-                case 't':  out.push_back('\t'); break;
-                case 'r':  out.push_back('\r'); break;
-                case '\\': out.push_back('\\'); break;
-                case '\'': out.push_back('\''); break;
-                case '"':  out.push_back('"');  break;
-                case '0':  out.push_back('\0'); break;
-                default:
-                    if (bad) *bad = esc;
-                    return std::nullopt;
-            }
-        }
-        return out;
-    }
-
     namespace {
         // хэш для TypeID
         struct TypeIdHash {
@@ -168,10 +141,164 @@ namespace Semantic {
         }
     }
 
-    // реестр типов
+    // разрешение перегрузок
 
-    std::size_t TypeRegistry::ArrayKeyHash::operator()(const ArrayKey& key) const {
-        return (static_cast<std::size_t>(key.elem.id) << 1) ^ std::hash<std::uint64_t>{}(key.size);
+    // фиксированный целый тип → {ранг ширины 0..3, беззнаковость}; nullopt если не целый
+    struct IntInfo { int rank; bool uns; };
+    static std::optional<IntInfo> int_info(TypeID t, TypeRegistry& reg) {
+        struct Row { TokenKind k; int rank; bool uns; };
+        static const Row table[] = {
+            {TokenKind::KwInt8, 0, false},
+            {TokenKind::KwInt16, 1, false},
+            {TokenKind::KwInt32, 2, false}, 
+            {TokenKind::KwInt64, 3, false},
+            {TokenKind::KwUint8, 0, true}, 
+            {TokenKind::KwUint16, 1, true},
+            {TokenKind::KwUint32, 2, true}, 
+            {TokenKind::KwUint64, 3, true},
+        };
+        for (const auto& r : table)
+            if (reg.equal(t, reg.builtin(r.k))) return IntInfo{r.rank, r.uns};
+        return std::nullopt;
+    }
+
+    // ширина вещественного типа (32/64); nullopt если не вещественный
+    static std::optional<int> float_rank(TypeID t, TypeRegistry& reg) {
+        if (reg.equal(t, reg.builtin(TokenKind::KwFloat32))) return 32;
+        if (reg.equal(t, reg.builtin(TokenKind::KwFloat64))) return 64;
+        return std::nullopt;
+    }
+
+    // стоимость неявного расширения from→to. единая таблица для всех
+    static std::optional<int> implicit_conv_cost(TypeID from, TypeID to, TypeRegistry& reg) {
+        auto ai = int_info(from, reg);
+        auto pi = int_info(to, reg);
+        auto af = float_rank(from, reg);
+        auto pf = float_rank(to, reg);
+        // целое → более широкое целое той же знаковости (запрет сужения и смены знака)
+        if (ai && pi) {
+            if (ai->uns == pi->uns && pi->rank > ai->rank)
+                return 10 + (pi->rank - ai->rank);
+            return std::nullopt;
+        }
+        // float32 → float64 (запрет сужения)
+        if (af && pf) {
+            if (*pf > *af) return 10;
+            return std::nullopt;
+        }
+        // целое → вещественное, если все значения разрядности представимы точно
+        // (int8/16→float32; int8/16/32→float64; 64-битные — запрещены)
+        if (ai && pf) {
+            bool ok = (*pf == 64 && ai->rank <= 2) || (*pf == 32 && ai->rank <= 1);
+            if (ok) return 20;
+            return std::nullopt;
+        }
+        return std::nullopt;
+    }
+
+    // стоимость сопоставления одной сигнатуры с уже выстроенным по местам
+    static std::optional<std::pair<int, std::vector<TypeID>>> signature_cost(
+        const FuncSig& sig,
+        const std::vector<TypeID>& arg_types,
+        TypeRegistry& registry)
+    {
+        if (sig.params.size() != arg_types.size()) return std::nullopt;
+        int cost = 0;
+        std::vector<TypeID> resolved = arg_types;
+        for (std::size_t j = 0; j < sig.params.size(); ++j) {
+            TypeID param = registry.resolve_alias(sig.params[j]);
+            TypeID arg   = registry.resolve_alias(arg_types[j]);
+            if (registry.equal(param, arg)) continue;  // точное — стоимость 0
+            // неявное приведение нетипизированного литерала
+            if (registry.is_untyped_int(arg) && registry.is_fixed_int(param)) {
+                resolved[j] = param;
+                cost += registry.equal(param, registry.builtin(TokenKind::KwInt32)) ? 1 : 2;
+                continue;
+            }
+            if (registry.is_untyped_float(arg) && registry.is_fixed_float(param)) {
+                resolved[j] = param;
+                cost += registry.equal(param, registry.builtin(TokenKind::KwFloat64)) ? 1 : 2;
+                continue;
+            }
+            // untyped-int в float-параметр
+            if (registry.is_untyped_int(arg) && registry.is_fixed_float(param)) {
+                resolved[j] = param;
+                cost += registry.equal(param, registry.builtin(TokenKind::KwFloat64)) ? 3 : 4;
+                continue;
+            }
+            // неявные расширения типизированных аргументов
+            if (auto c = implicit_conv_cost(arg, param, registry)) {
+                resolved[j] = param;
+                cost += *c;
+                continue;
+            }
+            return std::nullopt;
+        }
+        return std::pair{cost, std::move(resolved)};
+    }
+
+    // регистрация сигнатуры функции
+    static bool is_const_default(const Parser::Expr& e) {
+        return std::visit([](const auto& nn) -> bool {
+            using U = std::decay_t<decltype(nn)>;
+            if constexpr (std::is_same_v<U, Parser::LitIntExpr> ||
+                          std::is_same_v<U, Parser::LitFloatExpr> ||
+                          std::is_same_v<U, Parser::LitBoolExpr> ||
+                          std::is_same_v<U, Parser::LitStringExpr> ||
+                          std::is_same_v<U, Parser::LitCharExpr>) {
+                return true;
+            } else if constexpr (std::is_same_v<U, Parser::UnaryExpr>) {
+                return nn.op == Lexer::TokenKind::OpMinus &&
+                    (std::holds_alternative<Parser::LitIntExpr>(nn.operand->node) ||
+                     std::holds_alternative<Parser::LitFloatExpr>(nn.operand->node));
+            } else {
+                return false;
+            }
+        }, e.node);
+    }
+
+    // всегда ли возвращает?
+    // содержит ли блок break, выходящий из текущего цикла
+    // (во вложенные while не спускаемся — их break перехватываются ими)
+    static bool contains_break(const Parser::Stmt& stmt) {
+        return std::visit([&](const auto& n) -> bool {
+            using T = std::decay_t<decltype(n)>;
+            if constexpr (std::is_same_v<T, Parser::BreakStmt>) return true;
+            if constexpr (std::is_same_v<T, Parser::BlockStmt>) {
+                for (const auto& s : n.elems)
+                    if (contains_break(s)) return true;
+                return false;
+            }
+            if constexpr (std::is_same_v<T, Parser::IfStmt>) {
+                return contains_break(*n.then_body)
+                    || (n.else_body && contains_break(*n.else_body));
+            }
+            // WhileStmt и прочее — break внутри них к нашему циклу не относится
+            return false;
+        }, stmt.node);
+    }
+
+    // диагностика
+
+    void DiagBag::error(std::size_t line, std::size_t col, std::string msg) {
+        items.push_back({DiagSeverity::Error, std::move(msg), line, col});
+    }
+
+    void DiagBag::warning(std::size_t line, std::size_t col, std::string msg) {
+        items.push_back({DiagSeverity::Warning, std::move(msg), line, col});
+    }
+
+    bool DiagBag::has_errors() const {
+        for (auto& d : items) {
+            if (d.severity == DiagSeverity::Error) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    const std::vector<Diagnostic>& DiagBag::all() const {
+        return items;
     }
 
     // конструктор: встроенные типы
@@ -217,15 +344,19 @@ namespace Semantic {
     TypeID TypeRegistry::builtin(TokenKind k) const {
         return by_kind.at(k);
     }
+
     TypeID TypeRegistry::untyped_int() const {
         return untyped_int_id;
     }
+
     TypeID TypeRegistry::untyped_float() const {
         return untyped_float_id;
     }
+
     TypeID TypeRegistry::error_type() const {
         return error_id;
     }
+
     TypeID TypeRegistry::void_type() const {
         return void_id;
     }
@@ -269,20 +400,6 @@ namespace Semantic {
     bool TypeRegistry::is_float(TypeID id) const {
         id = resolve_alias(id);
         return is_fixed_float(id) || is_untyped_float(id);
-    }
-
-    // разрешение цепочки псевдонимов
-    TypeID TypeRegistry::resolve_alias(TypeID id) const {
-        std::size_t guard = 0;
-        while (guard++ < entries.size()) {
-            if (id.id >= entries.size()) return id;
-            const auto* alias = std::get_if<AliasType>(&entries[id.id]);
-            if (!alias || !alias->resolved) {
-                return id;
-            }
-            id = alias->target;
-        }
-        return id;
     }
 
     // создание типа-массива
@@ -361,32 +478,6 @@ namespace Semantic {
         alias->resolved = true;
     }
 
-    const std::vector<TypeID>& TypeRegistry::all_aliases() const {
-        return alias_ids;
-    }
-
-    bool TypeRegistry::is_alias(TypeID id) const {
-        if (id.id >= entries.size()) return false;
-        return std::holds_alternative<AliasType>(entries[id.id]);
-    }
-
-    // сырая цель алиаса; nullopt — если это не resolved-алиас
-    std::optional<TypeID> TypeRegistry::alias_target(TypeID id) const {
-        if (id.id >= entries.size()) return std::nullopt;
-        const auto* alias = std::get_if<AliasType>(&entries[id.id]);
-        if (!alias || !alias->resolved) return std::nullopt;
-        return alias->target;
-    }
-
-    // разорвать алиас, входящий в цикл: цель → error, resolved=false,
-    void TypeRegistry::mark_alias_error(TypeID id) {
-        if (id.id >= entries.size()) return;
-        if (auto* alias = std::get_if<AliasType>(&entries[id.id])) {
-            alias->target = error_id;
-            alias->resolved = false;
-        }
-    }
-
     // поиск типа по имени
     std::optional<TypeID> TypeRegistry::by_name(std::string_view name) const {
         auto it = by_name_map.find(std::string(name));
@@ -420,6 +511,46 @@ namespace Semantic {
 
     const std::vector<TypeID>& TypeRegistry::all_structs() const {
         return struct_ids;
+    }
+
+    const std::vector<TypeID>& TypeRegistry::all_aliases() const {
+        return alias_ids;
+    }
+
+    bool TypeRegistry::is_alias(TypeID id) const {
+        if (id.id >= entries.size()) return false;
+        return std::holds_alternative<AliasType>(entries[id.id]);
+    }
+
+    // сырая цель алиаса; nullopt — если это не resolved-алиас
+    std::optional<TypeID> TypeRegistry::alias_target(TypeID id) const {
+        if (id.id >= entries.size()) return std::nullopt;
+        const auto* alias = std::get_if<AliasType>(&entries[id.id]);
+        if (!alias || !alias->resolved) return std::nullopt;
+        return alias->target;
+    }
+
+    // разорвать алиас, входящий в цикл: цель → error, resolved=false,
+    void TypeRegistry::mark_alias_error(TypeID id) {
+        if (id.id >= entries.size()) return;
+        if (auto* alias = std::get_if<AliasType>(&entries[id.id])) {
+            alias->target = error_id;
+            alias->resolved = false;
+        }
+    }
+
+    // разрешение цепочки псевдонимов
+    TypeID TypeRegistry::resolve_alias(TypeID id) const {
+        std::size_t guard = 0;
+        while (guard++ < entries.size()) {
+            if (id.id >= entries.size()) return id;
+            const auto* alias = std::get_if<AliasType>(&entries[id.id]);
+            if (!alias || !alias->resolved) {
+                return id;
+            }
+            id = alias->target;
+        }
+        return id;
     }
 
     // имя типа
@@ -464,24 +595,10 @@ namespace Semantic {
         return "?";
     }
 
-    // диагностика
+    // реестр типов
 
-    void DiagBag::error(std::size_t line, std::size_t col, std::string msg) {
-        items.push_back({DiagSeverity::Error, std::move(msg), line, col});
-    }
-    void DiagBag::warning(std::size_t line, std::size_t col, std::string msg) {
-        items.push_back({DiagSeverity::Warning, std::move(msg), line, col});
-    }
-    bool DiagBag::has_errors() const {
-        for (auto& d : items) {
-            if (d.severity == DiagSeverity::Error) {
-                return true;
-            }
-        }
-        return false;
-    }
-    const std::vector<Diagnostic>& DiagBag::all() const {
-        return items;
+    std::size_t TypeRegistry::ArrayKeyHash::operator()(const ArrayKey& key) const {
+        return (static_cast<std::size_t>(key.elem.id) << 1) ^ std::hash<std::uint64_t>{}(key.size);
     }
 
     // область видимости
@@ -518,6 +635,38 @@ namespace Semantic {
         pass2_check_bodies(decls, root_scope);    // проверка тел функций
         aast.types = &registry;
         return std::move(diag);
+    }
+
+    // разрешение типа: TypeRef → TypeID
+    std::optional<TypeID> Semantic::resolve_type(const Parser::TypeRef& tr) {
+        return std::visit([&](const auto& n) -> std::optional<TypeID> {
+
+            using T = std::decay_t<decltype(n)>;
+
+            if constexpr (std::is_same_v<T, Parser::BuiltinTypeRef>) {
+                return registry.builtin(n.type_kind);
+            } else if constexpr (std::is_same_v<T, Parser::NamedTypeRef>) {
+                if (auto tid = registry.by_name(n.name)) {
+                    return *tid;
+                }
+                diag.error(cur_line, cur_col, "unknown type '" + std::string(n.name) + "'");
+                return std::nullopt;
+            } else if constexpr (std::is_same_v<T, Parser::ArrayTypeRef>) {
+                auto elem = resolve_type(*n.elem);
+                if (!elem) {
+                    return std::nullopt;
+                }
+                auto size = parse_uint(n.size);
+                if (!size || *size == 0) {
+                    diag.error(cur_line, cur_col, "array size must be positive");
+                    return std::nullopt;
+                }
+                return registry.array(*elem, *size);
+            } else {
+                diag.error(cur_line, cur_col, "unexpected type form");
+                return std::nullopt;
+            }
+        }, tr.node);
     }
 
     // встроенные функции
@@ -577,38 +726,6 @@ namespace Semantic {
         add_fn("assert", {bool_, str}, void_);
     }
 
-    // разрешение типа: TypeRef → TypeID
-    std::optional<TypeID> Semantic::resolve_type(const Parser::TypeRef& tr) {
-        return std::visit([&](const auto& n) -> std::optional<TypeID> {
-
-            using T = std::decay_t<decltype(n)>;
-
-            if constexpr (std::is_same_v<T, Parser::BuiltinTypeRef>) {
-                return registry.builtin(n.type_kind);
-            } else if constexpr (std::is_same_v<T, Parser::NamedTypeRef>) {
-                if (auto tid = registry.by_name(n.name)) {
-                    return *tid;
-                }
-                diag.error(cur_line, cur_col, "unknown type '" + std::string(n.name) + "'");
-                return std::nullopt;
-            } else if constexpr (std::is_same_v<T, Parser::ArrayTypeRef>) {
-                auto elem = resolve_type(*n.elem);
-                if (!elem) {
-                    return std::nullopt;
-                }
-                auto size = parse_uint(n.size);
-                if (!size || *size == 0) {
-                    diag.error(cur_line, cur_col, "array size must be positive");
-                    return std::nullopt;
-                }
-                return registry.array(*elem, *size);
-            } else {
-                diag.error(cur_line, cur_col, "unexpected type form");
-                return std::nullopt;
-            }
-        }, tr.node);
-    }
-
     // проход 1: регистрация имён
 
     // корневой обход
@@ -620,26 +737,14 @@ namespace Semantic {
         check_recursive_structs();
     }
 
-    void Semantic::pass1_declare(const std::vector<Parser::Decl>& decls, Scope& scope) {
-        pass1_declare_types(decls, scope);
-        pass1_declare_fns(decls, scope);
-    }
-
-    // регистрация только функций (+ рекурсия в namespace)
-    void Semantic::pass1_declare_fns(const std::vector<Parser::Decl>& decls, Scope& scope) {
-        for (const auto& d : decls) {
-            if (auto* fn = std::get_if<Parser::FnDecl>(&d.node)) {
-                pass1_declare_fn(scope, *fn, d.line, d.column);
-            } else if (auto* ns = std::get_if<Parser::NameSpaceDecl>(&d.node)) {
-                Scope& ns_scope = ensure_namespace(scope, ns->name);
-                pass1_declare_fns(ns->decls, ns_scope);
-            }
-        }
-    }
-
     // регистрация типов
     void Semantic::pass1_declare_types(const std::vector<Parser::Decl>& decls) {
         pass1_declare_types(decls, root_scope);
+    }
+
+    void Semantic::pass1_declare(const std::vector<Parser::Decl>& decls, Scope& scope) {
+        pass1_declare_types(decls, scope);
+        pass1_declare_fns(decls, scope);
     }
 
     void Semantic::pass1_declare_types(const std::vector<Parser::Decl>& decls, Scope& scope) {
@@ -673,7 +778,8 @@ namespace Semantic {
         // подпроход 2: цели псевдонимов
         for (const auto& d : decls) {
             if (auto* ta = std::get_if<Parser::TypeAliasDecl>(&d.node)) {
-                cur_line = d.line; cur_col = d.column;   // позиция для unknown type
+                cur_line = d.line;   // позиция для unknown type
+                cur_col = d.column;
                 if (auto target = resolve_type(ta -> type)) {
                     registry.register_alias(ta -> name, *target);
                 }
@@ -683,7 +789,8 @@ namespace Semantic {
         // подпроход 3: поля структур
         for (const auto& d : decls) {
             if (auto* st = std::get_if<Parser::StructDecl>(&d.node)) {
-                cur_line = d.line; cur_col = d.column;
+                cur_line = d.line;
+                cur_col = d.column;
                 std::unordered_set<std::string_view> seen_fields;
                 std::vector<std::pair<std::string_view, TypeID>> fields;
                 fields.reserve(st -> field.size());
@@ -701,6 +808,35 @@ namespace Semantic {
                 }
                 registry.finalize_struct(st -> name, std::move(fields));
             }
+        }
+    }
+
+    // регистрация только функций (+ рекурсия в namespace)
+    void Semantic::pass1_declare_fns(const std::vector<Parser::Decl>& decls, Scope& scope) {
+        for (const auto& d : decls) {
+            if (auto* fn = std::get_if<Parser::FnDecl>(&d.node)) {
+                pass1_declare_fn(scope, *fn, d.line, d.column);
+            } else if (auto* ns = std::get_if<Parser::NameSpaceDecl>(&d.node)) {
+                Scope& ns_scope = ensure_namespace(scope, ns->name);
+                pass1_declare_fns(ns->decls, ns_scope);
+            }
+        }
+    }
+
+    // проход 2: проверка тел функций
+    void Semantic::pass2_check_bodies(const std::vector<Parser::Decl>& decls, Scope& scope) {
+        for (const auto& d : decls) {
+            std::visit([&](const auto& n) {
+                using T = std::decay_t<decltype(n)>;
+                if constexpr (std::is_same_v<T, Parser::FnDecl>) {
+                    check_function_body(n, scope, d.line, d.column);
+                } else if constexpr (std::is_same_v<T, Parser::NameSpaceDecl>) {
+                    Symbol* ns_sym = scope.lookup_local(n.name);
+                    if (ns_sym && ns_sym->kind == SymbolKind::Namespace) {
+                        pass2_check_bodies(n.decls, *std::get<NamespaceSymbol>(ns_sym->data).scope);
+                    }
+                }
+            }, d.node);
         }
     }
 
@@ -789,17 +925,34 @@ namespace Semantic {
         }
     }
 
-    // регистрация сигнатуры функции
     void Semantic::pass1_declare_fn(Scope& scope, const Parser::FnDecl& fn,
                             std::size_t line, std::size_t col) {
-        cur_line = line; cur_col = col;
+        cur_line = line;
+        cur_col = col;
         // типы параметров
         std::vector<TypeID> params;
-        for (const auto& [param_name, param_type] : fn.params) {
-            if (auto tid = resolve_type(param_type)) {
-                params.push_back(*tid);
-            } else{
-                params.push_back(registry.error_type());
+        bool seen_default = false;        // встречен ли параметр с дефолтом
+        for (const auto& p : fn.params) {
+            TypeID ptid = resolve_type(p.type).value_or(registry.error_type());
+            params.push_back(ptid);
+
+            // значения по умолчанию - только в хвосте, только литералы
+            if (p.default_value) {
+                seen_default = true;
+                if (!is_const_default(*p.default_value)) {
+                    diag.error(line, col, "default value of parameter '"
+                        + std::string(p.name) + "' must be a literal");
+                } else {
+                    // проверяем выражение сразу и кладём его тип в aast (нужно кодогену)
+                    TypeID dt = check_expr(*p.default_value, ptid);
+                    TypeID final_t = registry.is_untyped(dt) ? ptid : dt;
+                    aast.expr_type[p.default_value.get()] = final_t;
+                    if (const auto* u = std::get_if<Parser::UnaryExpr>(&p.default_value->node))
+                        aast.expr_type[u->operand.get()] = final_t;
+                }
+            } else if (seen_default) {
+                diag.error(line, col, "parameter '" + std::string(p.name)
+                    + "' without default value follows a parameter with a default value");
             }
         }
 
@@ -830,6 +983,57 @@ namespace Semantic {
             }
         }
         fs.overloads.push_back(std::move(sig));
+    }
+
+    // проверка тела функции
+    void Semantic::check_function_body(const Parser::FnDecl& fn, Scope& parent,
+                                       std::size_t line, std::size_t col) {
+        cur_line = line;
+        cur_col = col;
+        Scope& fn_scope = push_scope(parent);
+        Scope* old_scope = current_scope;
+        current_scope = &fn_scope;
+
+        TypeID old_ret = current_return_type;
+        current_return_type = fn.return_type
+            ? resolve_type(*fn.return_type).value_or(registry.error_type())
+            : registry.void_type();
+
+        bool old_loop = in_loop;
+        in_loop = false;
+
+        // параметры как локальные переменные
+        for (const auto& p : fn.params) {
+            auto tid = resolve_type(p.type);
+            if (tid) {
+                fn_scope.insert(Symbol{SymbolKind::Variable, p.name,
+                    VarSymbol{*tid, false, 0, 0}});
+            }
+        }
+
+        // проверка тела
+        for (const auto& stmt : fn.body.elems) {
+            check_stmt(stmt);
+        }
+
+        // проверка return в не-void
+        if (!registry.equal(current_return_type, registry.void_type())) {
+            bool has_return = false;
+            for (const auto& s : fn.body.elems) {
+                if (always_returns(s)) {
+                    has_return = true;
+                    break;
+                }
+            }
+            if (!has_return) {
+                diag.error(line, col, "non-void function '" + std::string(fn.name)
+                    + "' does not return a value on all paths");
+            }
+        }
+
+        current_scope = old_scope;
+        current_return_type = old_ret;
+        in_loop = old_loop;
     }
 
     // проверка main
@@ -874,149 +1078,6 @@ namespace Semantic {
         ns_scope.parent = &scope;
         scope.insert(Symbol{SymbolKind::Namespace, name, NamespaceSymbol{&ns_scope}});
         return ns_scope;
-    }
-
-    // вспомогательные проверки
-
-    // lvalue?
-    bool Semantic::is_lvalue(const Parser::Expr& e) const {
-        return std::visit([&](const auto& n) -> bool {
-            using T = std::decay_t<decltype(n)>;
-            if constexpr (std::is_same_v<T, Parser::IdentExpr>) return true;
-            if constexpr (std::is_same_v<T, Parser::FieldExpr>) return true;
-            if constexpr (std::is_same_v<T, Parser::IndexExpr>) return true;
-            return false;
-        }, e.node);
-    }
-
-    // mut корень?
-    bool Semantic::is_mut_root(const Parser::Expr& e) const {
-        return std::visit([&](const auto& n) -> bool {
-            using T = std::decay_t<decltype(n)>;
-            if constexpr (std::is_same_v<T, Parser::IdentExpr>) {
-                Symbol* sym = current_scope->lookup_chain(n.value);
-                if (sym && sym->kind == SymbolKind::Variable) {
-                    return std::get<VarSymbol>(sym->data).is_mut;
-                }
-                return false;
-            }
-            if constexpr (std::is_same_v<T, Parser::FieldExpr>) {
-                return is_mut_root(*n.object);
-            }
-            if constexpr (std::is_same_v<T, Parser::IndexExpr>) {
-                return is_mut_root(*n.array);
-            }
-            return false;
-        }, e.node);
-    }
-
-    // всегда ли возвращает?
-    // содержит ли блок break, выходящий из текущего цикла
-    // (во вложенные while не спускаемся — их break перехватываются ими)
-    static bool contains_break(const Parser::Stmt& stmt) {
-        return std::visit([&](const auto& n) -> bool {
-            using T = std::decay_t<decltype(n)>;
-            if constexpr (std::is_same_v<T, Parser::BreakStmt>) return true;
-            if constexpr (std::is_same_v<T, Parser::BlockStmt>) {
-                for (const auto& s : n.elems)
-                    if (contains_break(s)) return true;
-                return false;
-            }
-            if constexpr (std::is_same_v<T, Parser::IfStmt>) {
-                return contains_break(*n.then_body)
-                    || (n.else_body && contains_break(*n.else_body));
-            }
-            // WhileStmt и прочее — break внутри них к нашему циклу не относится
-            return false;
-        }, stmt.node);
-    }
-
-    bool Semantic::always_returns(const Parser::Stmt& stmt) {
-        return std::visit([&](const auto& n) -> bool {
-            using T = std::decay_t<decltype(n)>;
-            if constexpr (std::is_same_v<T, Parser::ReturnStmt>) return true;
-            // вызов panic/exit расходится (управление не возвращается)
-            if constexpr (std::is_same_v<T, Parser::ExprStmt>) {
-                if (const auto* call = std::get_if<Parser::CallExpr>(&n.expr->node)) {
-                    if (const auto* id = std::get_if<Parser::IdentExpr>(&call->call->node)) {
-                        if (id->value == "panic" || id->value == "exit") return true;
-                    }
-                }
-                return false;
-            }
-            if constexpr (std::is_same_v<T, Parser::BlockStmt>) {
-                for (const auto& s : n.elems) {
-                    if (always_returns(s)) return true;
-                }
-                return false;
-            }
-            if constexpr (std::is_same_v<T, Parser::IfStmt>) {
-                return n.else_body && always_returns(*n.then_body) && always_returns(*n.else_body);
-            }
-            if constexpr (std::is_same_v<T, Parser::WhileStmt>) {
-                // while true без break никогда не «проваливается» дальше → путь завершён.
-                // С break управление может выйти из цикла — тогда возврат не гарантирован.
-                bool cond_is_true = false;
-                if (const auto* lit = std::get_if<Parser::LitBoolExpr>(&n.condition->node)) {
-                    cond_is_true = lit->value;
-                }
-                return cond_is_true && !contains_break(*n.body);
-            }
-            return false;
-        }, stmt.node);
-    }
-
-    // разрешение перегрузок
-
-    struct OverloadMatch {
-        std::size_t index;
-        std::vector<TypeID> resolved_args;
-    };
-
-    // поиск перегрузки по типам аргументов.xz
-    static std::optional<OverloadMatch> resolve_overload(
-        const std::vector<FuncSig>& overloads,
-        const std::vector<TypeID>& arg_types,
-        TypeRegistry& registry)
-    {
-        std::optional<OverloadMatch> best;
-        int best_cost = 0;
-        for (std::size_t i = 0; i < overloads.size(); ++i) {
-            const auto& sig = overloads[i];
-            if (sig.params.size() != arg_types.size()) continue;
-            bool match = true;
-            int cost = 0;
-            std::vector<TypeID> resolved = arg_types;
-            for (std::size_t j = 0; j < sig.params.size(); ++j) {
-                TypeID param = registry.resolve_alias(sig.params[j]);
-                TypeID arg   = registry.resolve_alias(arg_types[j]);
-                if (registry.equal(param, arg)) continue;  // точное — стоимость 0
-                // неявное приведение нетипизированного литерала
-                if (registry.is_untyped_int(arg) && registry.is_fixed_int(param)) {
-                    resolved[j] = param;
-                    cost += registry.equal(param, registry.builtin(TokenKind::KwInt32)) ? 1 : 2;
-                    continue;
-                }
-                if (registry.is_untyped_float(arg) && registry.is_fixed_float(param)) {
-                    resolved[j] = param;
-                    cost += registry.equal(param, registry.builtin(TokenKind::KwFloat64)) ? 1 : 2;
-                    continue;
-                }
-                // untyped-int в float-параметр
-                if (registry.is_untyped_int(arg) && registry.is_fixed_float(param)) {
-                    resolved[j] = param;
-                    cost += registry.equal(param, registry.builtin(TokenKind::KwFloat64)) ? 3 : 4;
-                    continue;
-                }
-                match = false;
-                break;
-            }
-            if (match && (!best || cost < best_cost)) {
-                best_cost = cost;
-                best = OverloadMatch{i, std::move(resolved)};
-            }
-        }
-        return best;
     }
 
     // проверка выражений
@@ -1325,9 +1386,9 @@ namespace Semantic {
                             return registry.error_type();
                         }
                     }
-                    // строгое равенство типов (как у `=`); сдвиг — исключение:
-                    // величина сдвига может быть другого целого типа
-                    if (!is_shift && !registry.equal(lhs_norm, rhs_norm)) {
+                    // rhs неявно расширяется до типа цели (результат — тип `a`);
+                    // сдвиг — исключение: величина сдвига может быть другого целого типа
+                    if (!is_shift && !coerce_to(*n.rhs, rhs_t, lhs_t)) {
                         diag.error(e.line, e.column, "cannot assign " + registry.name(rhs_t)
                             + " to " + registry.name(lhs_t));
                         return registry.error_type();
@@ -1367,10 +1428,12 @@ namespace Semantic {
                             }
                             // резолв untyped перед арифметикой
                             if (!registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm)) {
-                                rhs_t = lhs_t; rhs_norm = lhs_norm;
+                                rhs_t = lhs_t;
+                                rhs_norm = lhs_norm;
                             }
                             else if (registry.is_untyped(lhs_norm) && !registry.is_untyped(rhs_norm)) {
-                                lhs_t = rhs_t; lhs_norm = rhs_norm;
+                                lhs_t = rhs_t;
+                                lhs_norm = rhs_norm;
                             }
                             else if (registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm)){
                                 lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
@@ -1389,42 +1452,70 @@ namespace Semantic {
                             }
                             aast.expr_type[n.lhs.get()] = lhs_t;
                             aast.expr_type[n.rhs.get()] = rhs_t;
-                            return unify_binary(lhs_t, rhs_t);
+                            // A.1.8: общий тип; узкий операнд неявно расширяется
+                            if (auto ct = common_type(lhs_t, rhs_t)) {
+                                coerce_to(*n.lhs, lhs_t, *ct);
+                                coerce_to(*n.rhs, rhs_t, *ct);
+                                return *ct;
+                            }
+                            diag.error(e.line, e.column,
+                                "mixed numeric types require explicit cast: "
+                                + registry.name(lhs_t) + " and " + registry.name(rhs_t));
+                            return registry.error_type();
                         }
 
                         // сравнение
                         case TokenKind::OpEqEq:
-                        case TokenKind::OpBangEq:
+                        case TokenKind::OpBangEq: {
                             // резолв untyped перед сравнением
-                            if (!registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm))
-                                { rhs_t = lhs_t; rhs_norm = lhs_norm; }
-                            else if (registry.is_untyped(lhs_norm) && !registry.is_untyped(rhs_norm))
-                                { lhs_t = rhs_t; lhs_norm = rhs_norm; }
-                            else if (registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm))
-                                { lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
-                                  lhs_norm = rhs_norm = lhs_t; }
-                            if (!types_compatible(lhs_norm, rhs_norm)) {
-                                diag.error(e.line, e.column, "cannot compare "
-                                    + registry.name(lhs_t) + " and " + registry.name(rhs_t));
-                                return registry.error_type();
+                            if (!registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm)) {
+                                rhs_t = lhs_t;
+                                rhs_norm = lhs_norm;
+                            }
+                            else if (registry.is_untyped(lhs_norm) && !registry.is_untyped(rhs_norm)) {
+                                lhs_t = rhs_t;
+                                lhs_norm = rhs_norm;
+                            }
+                            else if (registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm)) {
+                                lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
+                                lhs_norm = rhs_norm = lhs_t;
                             }
                             aast.expr_type[n.lhs.get()] = lhs_t;
                             aast.expr_type[n.rhs.get()] = rhs_t;
-                            return registry.builtin(TokenKind::KwBool);
+                            // равенство определено для string/массивов/структур (поэлементно)
+                            // и для любых совместимых числовых операндов (с расширением)
+                            if (registry.equal(lhs_norm, rhs_norm)) {
+                                return registry.builtin(TokenKind::KwBool);
+                            }
+                            // A.1.8: числовые операнды — приводим к общему типу
+                            if (auto ct = common_type(lhs_t, rhs_t)) {
+                                coerce_to(*n.lhs, lhs_t, *ct);
+                                coerce_to(*n.rhs, rhs_t, *ct);
+                                return registry.builtin(TokenKind::KwBool);
+                            }
+                            diag.error(e.line, e.column, "cannot compare "
+                                + registry.name(lhs_t) + " and " + registry.name(rhs_t));
+                            return registry.error_type();
+                        }
 
                         // неравенства
                         case TokenKind::OpLt:
                         case TokenKind::OpLtEq:
                         case TokenKind::OpGt:
-                        case TokenKind::OpGtEq:
+                        case TokenKind::OpGtEq: {
                             // резолв untyped перед сравнением
-                            if (!registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm))
-                                { rhs_t = lhs_t; rhs_norm = lhs_norm; }
-                            else if (registry.is_untyped(lhs_norm) && !registry.is_untyped(rhs_norm))
-                                { lhs_t = rhs_t; lhs_norm = rhs_norm; }
-                            else if (registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm))
-                                { lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
-                                  lhs_norm = rhs_norm = lhs_t; }
+                            if (!registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm)) {
+                                rhs_t = lhs_t;
+                                rhs_norm = lhs_norm;
+                            }
+                            else if (registry.is_untyped(lhs_norm) && !registry.is_untyped(rhs_norm)) {
+                                lhs_t = rhs_t;
+                                lhs_norm = rhs_norm;
+                            }
+                            else if (registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm)) {
+                                lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
+                                lhs_norm = rhs_norm = lhs_t;
+                            }
                             if (!is_numeric(lhs_norm) || !is_numeric(rhs_norm)) {
                                 diag.error(e.line, e.column, "comparison on non-numeric types: "
                                     + registry.name(lhs_t) + " and " + registry.name(rhs_t));
@@ -1432,7 +1523,17 @@ namespace Semantic {
                             }
                             aast.expr_type[n.lhs.get()] = lhs_t;
                             aast.expr_type[n.rhs.get()] = rhs_t;
-                            return registry.builtin(TokenKind::KwBool);
+                            // общий тип; узкий операнд неявно расширяется
+                            if (auto ct = common_type(lhs_t, rhs_t)) {
+                                coerce_to(*n.lhs, lhs_t, *ct);
+                                coerce_to(*n.rhs, rhs_t, *ct);
+                                return registry.builtin(TokenKind::KwBool);
+                            }
+                            diag.error(e.line, e.column,
+                                "mixed numeric types require explicit cast: "
+                                + registry.name(lhs_t) + " and " + registry.name(rhs_t));
+                            return registry.error_type();
+                        }
 
                         // логические
                         case TokenKind::OpAndAnd:
@@ -1452,9 +1553,11 @@ namespace Semantic {
                         case TokenKind::OpShr: {
                             // резолв untyped так же, как в арифметике
                             if (!registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm)) {
-                                rhs_t = lhs_t; rhs_norm = lhs_norm;
+                                rhs_t = lhs_t;
+                                rhs_norm = lhs_norm;
                             } else if (registry.is_untyped(lhs_norm) && !registry.is_untyped(rhs_norm)) {
-                                lhs_t = rhs_t; lhs_norm = rhs_norm;
+                                lhs_t = rhs_t;
+                                lhs_norm = rhs_norm;
                             } else if (registry.is_untyped(lhs_norm) && registry.is_untyped(rhs_norm)) {
                                 lhs_t = rhs_t = registry.builtin(TokenKind::KwInt32);
                                 lhs_norm = rhs_norm = lhs_t;
@@ -1466,7 +1569,21 @@ namespace Semantic {
                             }
                             aast.expr_type[n.lhs.get()] = lhs_t;
                             aast.expr_type[n.rhs.get()] = rhs_t;
-                            return unify_binary(lhs_t, rhs_t);
+                            // сдвиги: тип результата = тип левого; величина сдвига остаётся
+                            // своего целого типа (кодоген сам подгоняет ширину) — без общего типа
+                            if (n.op == TokenKind::OpShl || n.op == TokenKind::OpShr) {
+                                return lhs_t;
+                            }
+                            // A.1.8: & | ^ — общий тип, узкий операнд расширяется
+                            if (auto ct = common_type(lhs_t, rhs_t)) {
+                                coerce_to(*n.lhs, lhs_t, *ct);
+                                coerce_to(*n.rhs, rhs_t, *ct);
+                                return *ct;
+                            }
+                            diag.error(e.line, e.column,
+                                "mixed numeric types require explicit cast: "
+                                + registry.name(lhs_t) + " and " + registry.name(rhs_t));
+                            return registry.error_type();
                         }
 
                         default:
@@ -1491,9 +1608,8 @@ namespace Semantic {
                         diag.error(e.line, e.column, "cannot assign to immutable variable");
                         return registry.error_type();
                     }
-                    // строгое равенство типов
-                    if (!registry.equal(registry.resolve_alias(lhs_t),
-                                        registry.resolve_alias(rhs_t))) {
+                    // A.1.8: RHS неявно расширяется до типа цели (иначе нужен `as`)
+                    if (!coerce_to(*n.rhs, rhs_t, lhs_t)) {
                         diag.error(e.line, e.column, "cannot assign " + registry.name(rhs_t)
                             + " to " + registry.name(lhs_t));
                         return registry.error_type();
@@ -1585,42 +1701,187 @@ namespace Semantic {
 
                 auto& fs = std::get<FuncSymbol>(sym->data);
 
-                // типы аргументов
+                // типы аргументов (в порядке записи)
                 std::vector<TypeID> arg_types;
                 for (const auto& arg : n.args) {
                     arg_types.push_back(check_expr(arg, std::nullopt));
                 }
 
-                // len(array) — длина массива
-                if (!is_path && fn_name == "len" && arg_types.size() == 1
+                // структурные проверки именованных аргументов:
+                // позиционные строго до именованных
+                bool has_named = false;
+                for (std::size_t i = 0; i < n.arg_names.size(); ++i) {
+                    if (!n.arg_names[i].empty()) {
+                        has_named = true;
+                    } else if (has_named) {
+                        diag.error(e.line, e.column, "positional argument after named argument");
+                        return registry.error_type();
+                    }
+                }
+                // дубликаты имён
+                for (std::size_t i = 0; i < n.arg_names.size(); ++i) {
+                    if (n.arg_names[i].empty()) continue;
+                    for (std::size_t k = i + 1; k < n.arg_names.size(); ++k) {
+                        if (n.arg_names[k] == n.arg_names[i]) {
+                            diag.error(e.line, e.column, "duplicate argument for parameter '"
+                                + std::string(n.arg_names[i]) + "'");
+                            return registry.error_type();
+                        }
+                    }
+                }
+
+                // len(array) — длина массива (только позиционный одиночный аргумент)
+                if (!is_path && !has_named && fn_name == "len" && arg_types.size() == 1
                     && registry.is_array(registry.resolve_alias(arg_types[0]))) {
                     return registry.builtin(TokenKind::KwInt32);
                 }
 
-                // разрешение перегрузки
-                auto match = resolve_overload(fs.overloads, arg_types, registry);
-                if (!match) {
-                    std::string msg = "no matching overload for '" + std::string(fn_name) + "'(";
-                    for (std::size_t i = 0; i < arg_types.size(); ++i) {
-                        if (i) msg += ", ";
-                        msg += registry.name(arg_types[i]);
+                // число позиционных аргументов (идут строго до именованных)
+                std::size_t num_positional = 0;
+                while (num_positional < n.arg_names.size()
+                       && n.arg_names[num_positional].empty())
+                    ++num_positional;
+
+                // перебор перегрузок: раскладка аргументов по слотам параметров
+                std::optional<std::size_t> best_idx;
+                int best_cost = 0;
+                std::vector<std::size_t> tied;        // кандидаты с минимальной стоимостью (A.3.1)
+                std::vector<const Parser::Expr*> best_slots;
+                std::vector<int> best_arg_idx;        // для слота: индекс в n.args или -1 (дефолт)
+                std::vector<TypeID> best_resolved;
+                std::string named_unknown_msg;        // именованный аргумент с неизвестным именем
+
+                for (std::size_t oi = 0; oi < fs.overloads.size(); ++oi) {
+                    const FuncSig& sig = fs.overloads[oi];
+                    const std::size_t nparams = sig.params.size();
+                    std::vector<const Parser::Expr*> slots(nparams, nullptr);
+                    std::vector<int> arg_idx(nparams, -1);
+                    std::vector<TypeID> slot_types(nparams, registry.error_type());
+
+                    if (num_positional > nparams) continue;
+                    bool ok = true;
+                    // позиционные
+                    for (std::size_t j = 0; j < num_positional; ++j) {
+                        slots[j] = &n.args[j];
+                        arg_idx[j] = static_cast<int>(j);
+                        slot_types[j] = arg_types[j];
+                    }
+                    // именованные (только для пользовательских функций — sig.decl != nullptr)
+                    for (std::size_t i = num_positional; i < n.args.size() && ok; ++i) {
+                        std::string_view nm = n.arg_names[i];
+                        std::optional<std::size_t> pj;
+                        if (sig.decl) {
+                            for (std::size_t j = 0; j < sig.decl->params.size(); ++j)
+                                if (sig.decl->params[j].name == nm) {
+                                    pj = j;
+                                    break;
+                                }
+                        }
+                        if (!pj) {
+                            ok = false;
+                            named_unknown_msg = "unknown parameter name '" + std::string(nm) + "'";
+                            break;
+                        }
+                        if (slots[*pj]) {   // перекрытие с позиционным или другим именованным
+                            ok = false;
+                            break;
+                        }
+                        slots[*pj] = &n.args[i];
+                        arg_idx[*pj] = static_cast<int>(i);
+                        slot_types[*pj] = arg_types[i];
+                    }
+                    if (!ok) continue;
+                    // незаполненные слоты — из значений по умолчанию
+                    int defaults_used = 0;
+                    for (std::size_t j = 0; j < nparams && ok; ++j) {
+                        if (slots[j]) continue;
+                        if (sig.decl && j < sig.decl->params.size()
+                            && sig.decl->params[j].default_value) {
+                            slots[j] = sig.decl->params[j].default_value.get();
+                            slot_types[j] = sig.params[j];  // дефолт уже проверен против типа
+                            ++defaults_used;
+                        } else {
+                            ok = false;
+                        }
+                    }
+                    if (!ok) continue;
+
+                    auto m = signature_cost(sig, slot_types, registry);
+                    if (!m) continue;
+                    // штраф за каждый подставленный дефолт: точная без-дефолтная
+                    // сигнатура побеждает дефолтную при равенстве по типам аргументов
+                    int total = m->first + defaults_used;
+                    if (!best_idx || total < best_cost) {
+                        best_cost = total;
+                        best_idx = oi;
+                        tied = {oi};
+                        best_slots = slots;
+                        best_arg_idx = arg_idx;
+                        best_resolved = std::move(m->second);
+                    } else if (total == best_cost) {
+                        tied.push_back(oi);   // равная минимальная стоимость → неоднозначность
+                    }
+                }
+
+                if (!best_idx) {
+                    if (!named_unknown_msg.empty()) {
+                        diag.error(e.line, e.column,
+                            named_unknown_msg + " in call to '" + std::string(fn_name) + "'");
+                    } else {
+                        std::string msg = "no matching overload for '" + std::string(fn_name) + "'(";
+                        for (std::size_t i = 0; i < arg_types.size(); ++i) {
+                            if (i) msg += ", ";
+                            if (i < n.arg_names.size() && !n.arg_names[i].empty())
+                                msg += std::string(n.arg_names[i]) + "=";
+                            msg += registry.name(arg_types[i]);
+                        }
+                        msg += ")";
+                        diag.error(e.line, e.column, msg);
+                    }
+                    return registry.error_type();
+                }
+
+                // неоднозначность: минимум достигается на ≥2 кандидатах (A.3.1)
+                if (tied.size() > 1) {
+                    std::string msg = "ambiguous call to '" + std::string(fn_name)
+                        + "' (candidates: ";
+                    for (std::size_t t = 0; t < tied.size(); ++t) {
+                        if (t) msg += ", ";
+                        const FuncSig& cand = fs.overloads[tied[t]];
+                        msg += std::string(fn_name) + "(";
+                        for (std::size_t p = 0; p < cand.params.size(); ++p) {
+                            if (p) msg += ", ";
+                            msg += registry.name(cand.params[p]);
+                        }
+                        msg += ")";
                     }
                     msg += ")";
                     diag.error(e.line, e.column, msg);
                     return registry.error_type();
                 }
 
-                // индекс разрешённой перегрузки
-                aast.resolved_overload[&n] = match->index;
+                // аннотации: индекс перегрузки + полный список слотов в порядке параметров
+                aast.resolved_overload[&n] = *best_idx;
+                aast.call_slots[&n] = best_slots;
+                aast.call_slot_types[&n] = best_resolved;   // типы параметров (для манглинга)
 
-                // подмена типов нетипизированных аргументов
-                for (std::size_t i = 0; i < n.args.size(); ++i) {
-                    if (registry.is_untyped(arg_types[i]) && i < match->resolved_args.size()) {
-                        aast.expr_type[&n.args[i]] = match->resolved_args[i];
+                // приведения переданных аргументов (дефолты уже аннотированы в pass1):
+                //  - нетипизированный литерал — перегенерируется сразу в целевом типе;
+                //  - типизированный аргумент — отдельный неявный каст в кодогене (A.3.1).
+                for (std::size_t j = 0; j < best_slots.size(); ++j) {
+                    if (best_arg_idx[j] < 0) continue;
+                    std::size_t k = static_cast<std::size_t>(best_arg_idx[j]);
+                    TypeID orig = arg_types[k];
+                    TypeID target = best_resolved[j];
+                    if (registry.is_untyped(orig)) {
+                        aast.expr_type[&n.args[k]] = target;
+                    } else if (!registry.equal(registry.resolve_alias(orig),
+                                               registry.resolve_alias(target))) {
+                        aast.coerce[&n.args[k]] = {orig, target};
                     }
                 }
 
-                return fs.overloads[match->index].return_type;
+                return fs.overloads[*best_idx].return_type;
             }
 
             // индексация массива
@@ -1682,6 +1943,11 @@ namespace Semantic {
                             ? registry.builtin(TokenKind::KwFloat64)
                             : registry.builtin(TokenKind::KwInt32));
                     aast.expr_type[&n.elems[0]] = elem_type;
+                } else if (exp_elem && !registry.equal(registry.resolve_alias(elem_type),
+                                                       registry.resolve_alias(*exp_elem))
+                           && coerce_to(n.elems[0], elem_type, *exp_elem)) {
+                    // A.1.8: первый элемент неявно расширяется до объявленного типа элемента
+                    elem_type = *exp_elem;
                 }
                 for (std::size_t i = 1; i < n.elems.size(); ++i) {
                     TypeID t = check_expr(n.elems[i], elem_type);
@@ -1689,7 +1955,8 @@ namespace Semantic {
                         t = elem_type;
                         aast.expr_type[&n.elems[i]] = t;
                     }
-                    if (!registry.equal(registry.resolve_alias(t), registry.resolve_alias(elem_type))) {
+                    // A.1.8: элемент может неявно расширяться до типа элемента массива
+                    if (!coerce_to(n.elems[i], t, elem_type)) {
                         diag.error(e.line, e.column, "array element type mismatch: expected "
                             + registry.name(elem_type) + ", got " + registry.name(t));
                     }
@@ -1725,7 +1992,11 @@ namespace Semantic {
                     TypeID ft = registry.error_type();
                     bool found = false;
                     for (const auto& [sfn, sft] : st->fields) {
-                        if (sfn == fname) { ft = sft; found = true; break; }
+                        if (sfn == fname) {
+                            ft = sft;
+                            found = true;
+                            break;
+                        }
                     }
                     if (!found) {
                         diag.error(e.line, e.column, "unknown field '" + std::string(fname)
@@ -1733,7 +2004,7 @@ namespace Semantic {
                         continue;
                     }
                     TypeID init_t = check_expr(*fexpr, ft);
-                    if (!registry.equal(registry.resolve_alias(init_t), registry.resolve_alias(ft))) {
+                    if (!coerce_to(*fexpr, init_t, ft)) {
                         diag.error(e.line, e.column, "field '" + std::string(fname)
                             + "' expects " + registry.name(ft)
                             + ", got " + registry.name(init_t));
@@ -1759,7 +2030,8 @@ namespace Semantic {
 
     // проверка инструкций
     void Semantic::check_stmt(const Parser::Stmt& stmt) {
-        cur_line = stmt.line; cur_col = stmt.column;   // запасная позиция для resolve_type (T5)
+        cur_line = stmt.line;   // запасная позиция для resolve_type (T5)
+        cur_col = stmt.column;
         std::visit([&](const auto& n) {
             using T = std::decay_t<decltype(n)>;
 
@@ -1775,12 +2047,14 @@ namespace Semantic {
                     init_t = expected.value_or(registry.builtin(TokenKind::KwInt32));
                     aast.expr_type[n.expr_init.get()] = init_t;
                 }
-                if (expected && !registry.equal(init_t, registry.error_type())
-                    && !registry.equal(registry.resolve_alias(init_t),
-                                       registry.resolve_alias(*expected))) {
-                    diag.error(stmt.line, stmt.column, "type mismatch: variable '" + std::string(n.name)
-                        + "' expects " + registry.name(*expected)
-                        + ", got " + registry.name(init_t));
+                if (expected) {
+                    if (!coerce_to(*n.expr_init, init_t, *expected)) {
+                        diag.error(stmt.line, stmt.column, "type mismatch: variable '" + std::string(n.name)
+                            + "' expects " + registry.name(*expected)
+                            + ", got " + registry.name(init_t));
+                    }
+                    // переменная с аннотацией имеет ОБЪЯВЛЕННЫЙ тип (init расширяется к нему)
+                    init_t = *expected;
                 }
                 if (!current_scope->insert(Symbol{
                     SymbolKind::Variable, n.name,
@@ -1838,9 +2112,7 @@ namespace Semantic {
                         val_t = current_return_type;
                         aast.expr_type[&*n.value] = val_t;
                     }
-                    if (!registry.equal(val_t, registry.error_type())
-                        && !registry.equal(registry.resolve_alias(val_t),
-                                           registry.resolve_alias(current_return_type))) {
+                    if (!coerce_to(*n.value, val_t, current_return_type)) {
                         diag.error(stmt.line, stmt.column, "return type mismatch: expected "
                             + registry.name(current_return_type)
                             + ", got " + registry.name(val_t));
@@ -1874,125 +2146,106 @@ namespace Semantic {
         }, stmt.node);
     }
 
-    // проверка тела функции
-    void Semantic::check_function_body(const Parser::FnDecl& fn, Scope& parent,
-                                       std::size_t line, std::size_t col) {
-        cur_line = line; cur_col = col;
-        Scope& fn_scope = push_scope(parent);
-        Scope* old_scope = current_scope;
-        current_scope = &fn_scope;
-
-        TypeID old_ret = current_return_type;
-        current_return_type = fn.return_type
-            ? resolve_type(*fn.return_type).value_or(registry.error_type())
-            : registry.void_type();
-
-        bool old_loop = in_loop;
-        in_loop = false;
-
-        // параметры как локальные переменные
-        for (const auto& [pname, ptype] : fn.params) {
-            auto tid = resolve_type(ptype);
-            if (tid) {
-                fn_scope.insert(Symbol{SymbolKind::Variable, pname,
-                    VarSymbol{*tid, false, 0, 0}});
-            }
-        }
-
-        // проверка тела
-        for (const auto& stmt : fn.body.elems) {
-            check_stmt(stmt);
-        }
-
-        // проверка return в не-void
-        if (!registry.equal(current_return_type, registry.void_type())) {
-            bool has_return = false;
-            for (const auto& s : fn.body.elems) {
-                if (always_returns(s)) { has_return = true; break; }
-            }
-            if (!has_return) {
-                diag.error(line, col, "non-void function '" + std::string(fn.name)
-                    + "' does not return a value on all paths");
-            }
-        }
-
-        current_scope = old_scope;
-        current_return_type = old_ret;
-        in_loop = old_loop;
-    }
-
-    // проход 2: проверка тел функций
-    void Semantic::pass2_check_bodies(const std::vector<Parser::Decl>& decls, Scope& scope) {
-        for (const auto& d : decls) {
-            std::visit([&](const auto& n) {
-                using T = std::decay_t<decltype(n)>;
-                if constexpr (std::is_same_v<T, Parser::FnDecl>) {
-                    check_function_body(n, scope, d.line, d.column);
-                } else if constexpr (std::is_same_v<T, Parser::NameSpaceDecl>) {
-                    Symbol* ns_sym = scope.lookup_local(n.name);
-                    if (ns_sym && ns_sym->kind == SymbolKind::Namespace) {
-                        pass2_check_bodies(n.decls, *std::get<NamespaceSymbol>(ns_sym->data).scope);
+    bool Semantic::always_returns(const Parser::Stmt& stmt) {
+        return std::visit([&](const auto& n) -> bool {
+            using T = std::decay_t<decltype(n)>;
+            if constexpr (std::is_same_v<T, Parser::ReturnStmt>) return true;
+            // вызов panic/exit расходится (управление не возвращается)
+            if constexpr (std::is_same_v<T, Parser::ExprStmt>) {
+                if (const auto* call = std::get_if<Parser::CallExpr>(&n.expr->node)) {
+                    if (const auto* id = std::get_if<Parser::IdentExpr>(&call->call->node)) {
+                        if (id->value == "panic" || id->value == "exit") return true;
                     }
                 }
-            }, d.node);
-        }
+                return false;
+            }
+            if constexpr (std::is_same_v<T, Parser::BlockStmt>) {
+                for (const auto& s : n.elems) {
+                    if (always_returns(s)) return true;
+                }
+                return false;
+            }
+            if constexpr (std::is_same_v<T, Parser::IfStmt>) {
+                return n.else_body && always_returns(*n.then_body) && always_returns(*n.else_body);
+            }
+            if constexpr (std::is_same_v<T, Parser::WhileStmt>) {
+                // while true без break никогда не «проваливается» дальше → путь завершён.
+                // С break управление может выйти из цикла — тогда возврат не гарантирован.
+                bool cond_is_true = false;
+                if (const auto* lit = std::get_if<Parser::LitBoolExpr>(&n.condition->node)) {
+                    cond_is_true = lit->value;
+                }
+                return cond_is_true && !contains_break(*n.body);
+            }
+            return false;
+        }, stmt.node);
+    }
+
+    // вспомогательные проверки
+
+    // lvalue?
+    bool Semantic::is_lvalue(const Parser::Expr& e) const {
+        return std::visit([&](const auto& n) -> bool {
+            using T = std::decay_t<decltype(n)>;
+            if constexpr (std::is_same_v<T, Parser::IdentExpr>) return true;
+            if constexpr (std::is_same_v<T, Parser::FieldExpr>) return true;
+            if constexpr (std::is_same_v<T, Parser::IndexExpr>) return true;
+            return false;
+        }, e.node);
+    }
+
+    // mut корень?
+    bool Semantic::is_mut_root(const Parser::Expr& e) const {
+        return std::visit([&](const auto& n) -> bool {
+            using T = std::decay_t<decltype(n)>;
+            if constexpr (std::is_same_v<T, Parser::IdentExpr>) {
+                Symbol* sym = current_scope->lookup_chain(n.value);
+                if (sym && sym->kind == SymbolKind::Variable) {
+                    return std::get<VarSymbol>(sym->data).is_mut;
+                }
+                return false;
+            }
+            if constexpr (std::is_same_v<T, Parser::FieldExpr>) {
+                return is_mut_root(*n.object);
+            }
+            if constexpr (std::is_same_v<T, Parser::IndexExpr>) {
+                return is_mut_root(*n.array);
+            }
+            return false;
+        }, e.node);
     }
 
     // унификация типов в бинарных операциях
-    TypeID Semantic::unify_binary(TypeID lhs, TypeID rhs) {
-        TypeID ln = registry.resolve_alias(lhs);
-        TypeID rn = registry.resolve_alias(rhs);
-
-        // оба нетипизированы
-        if (registry.is_untyped_int(ln) && registry.is_untyped_int(rn))
-            return registry.builtin(TokenKind::KwInt32);
-        if (registry.is_untyped_float(ln) && registry.is_untyped_float(rn))
-            return registry.builtin(TokenKind::KwFloat64);
-
-        // один нетипизирован
-        if (registry.is_untyped(ln)) return rhs;
-        if (registry.is_untyped(rn)) return lhs;
-
-        // оба конкретные
-        if (registry.is_float(ln) || registry.is_float(rn)) {
-            // оба float — более широкий
-            if (registry.is_float(ln) && registry.is_float(rn)) {
-                if (registry.equal(ln, registry.builtin(TokenKind::KwFloat64)) ||
-                    registry.equal(rn, registry.builtin(TokenKind::KwFloat64)))
-                    return registry.builtin(TokenKind::KwFloat64);
-                return registry.builtin(TokenKind::KwFloat32);
-            }
-            // float + int → float
-            return registry.is_float(ln) ? lhs : rhs;
-        }
-
-        // оба целые
-        if (registry.is_fixed_int(registry.resolve_alias(ln)) &&
-            registry.is_fixed_int(registry.resolve_alias(rn))) {
-            // оба беззнаковые — более широкий
-            if (is_unsigned(ln) && is_unsigned(rn)) {
-                return bit_width(ln) >= bit_width(rn) ? lhs : rhs;
-            }
-            // смешанные signed/unsigned — более широкий
-            if (is_unsigned(ln) || is_unsigned(rn)) {
-                if (bit_width(ln) > bit_width(rn)) return lhs;
-                if (bit_width(rn) > bit_width(ln)) return rhs;
-                return registry.equal(ln, rn) ? lhs : rhs;
-            }
-            // оба signed
-            return bit_width(ln) >= bit_width(rn) ? lhs : rhs;
-        }
-        return lhs;
-    }
-
-    // совместимость типов (сравнение, присваивание)
-    bool Semantic::types_compatible(TypeID a, TypeID b) {
+    // A.1.8: общий тип двух ФИКСИРОВАННЫХ операндов с учётом неявных расширений.
+    // Возвращает тип, к которому второй операнд расширяется неявно (без `as`):
+    // равны → сам тип; один расширяется до другого → более широкий; иначе nullopt
+    // (несовместимы без `as`: разные знаковости, float→int и т.п.). Untyped-операнды
+    // сюда не доходят — они резолвятся раньше, до вызова.
+    std::optional<TypeID> Semantic::common_type(TypeID a, TypeID b) {
         TypeID an = registry.resolve_alias(a);
         TypeID bn = registry.resolve_alias(b);
-        if (registry.equal(an, bn)) return true;
-        if (registry.is_untyped(an) || registry.is_untyped(bn)) return true;
-        if (registry.is_fixed_int(an) && registry.is_fixed_int(bn)) return true;
-        if (registry.is_fixed_float(an) && registry.is_fixed_float(bn)) return true;
+        if (registry.equal(an, bn)) return a;
+        if (implicit_conv_cost(an, bn, registry)) return b;  // a расширяется до b
+        if (implicit_conv_cost(bn, an, registry)) return a;  // b расширяется до a
+        return std::nullopt;
+    }
+
+    // A.1.8: from→to в контексте присваивания. Совместимо, если типы равны или
+    // from неявно расширяется до to (тогда на src вешается аннотация каста, и
+    // кодоген вставит расширение). Ошибочный/untyped from считается совместимым
+    // (эти случаи обрабатываются раньше: untyped уже подстроен под контекст,
+    // error_type подавляет каскад). false — нужен явный `as`.
+    bool Semantic::coerce_to(const Parser::Expr& src, TypeID from, TypeID to) {
+        if (registry.equal(from, registry.error_type())) return true;
+        if (registry.equal(to, registry.error_type())) return true;
+        if (registry.is_untyped(from)) return true;
+        TypeID fn = registry.resolve_alias(from);
+        TypeID tn = registry.resolve_alias(to);
+        if (registry.equal(fn, tn)) return true;
+        if (implicit_conv_cost(fn, tn, registry)) {
+            aast.coerce[&src] = {from, to};
+            return true;
+        }
         return false;
     }
 
@@ -2048,4 +2301,35 @@ namespace Semantic {
                << ": " << sev << ": " << d.message << '\n';
         }
     }
+
+    // декодер escape для строковых и символьных литералов.
+    std::optional<std::string> decode_escapes(std::string_view raw, char* bad) {
+        std::string out;
+        out.reserve(raw.size());
+        for (std::size_t i = 0; i < raw.size(); ++i) {
+            const char c = raw[i];
+            if (c != '\\') {
+                out.push_back(c);
+                continue;
+            }
+            if (i + 1 >= raw.size()) {           // одинокий '\' в конце
+                if (bad) *bad = '\0';
+                return std::nullopt;
+            }
+            switch (const char esc = raw[++i]) {
+                case 'n':  out.push_back('\n'); break;
+                case 't':  out.push_back('\t'); break;
+                case 'r':  out.push_back('\r'); break;
+                case '\\': out.push_back('\\'); break;
+                case '\'': out.push_back('\''); break;
+                case '"':  out.push_back('"');  break;
+                case '0':  out.push_back('\0'); break;
+                default:
+                    if (bad) *bad = esc;
+                    return std::nullopt;
+            }
+        }
+        return out;
+    }
+
 }

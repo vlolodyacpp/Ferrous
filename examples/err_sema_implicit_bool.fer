@@ -1,0 +1,7 @@
+// @error: type mismatch
+// A.1.8: bool не участвует в неявных приведениях — нужен явный `as`
+fn main() -> int32 {
+    let t: bool = true;
+    let n: int32 = t;        // bool → int32 неявно нельзя
+    return 0;
+}

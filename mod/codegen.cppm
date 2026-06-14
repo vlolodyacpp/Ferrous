@@ -9,6 +9,8 @@ export import Ferrous.Semantic;
 
 export namespace Codegen {
 
+    // Кодоген: финальная фаза. По аннотированному AST генерирует LLVM IR
+    // и собирает исполняемый файл. Детали скрыты в Impl (pimpl).
     class Codegen {
     public:
         Codegen();

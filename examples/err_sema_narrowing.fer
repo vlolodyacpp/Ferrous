@@ -1,0 +1,7 @@
+// @error: type mismatch
+// A.1.8: сужение запрещено — нужен явный `as`
+fn main() -> int32 {
+    let big: int64 = 1000;
+    let small: int8 = big;   // int64 → int8 неявно нельзя
+    return 0;
+}

@@ -11,6 +11,8 @@ export import Ferrous.Token;
 
 export namespace Parser {
 
+    // AST: Реализация каждого возможного узла для построения будущего AST программы
+
     struct TypeRef;
     struct Expr;
     struct Stmt;
@@ -91,7 +93,7 @@ export namespace Parser {
     struct CallExpr { // f(1, 2) или f(1, c=3)
         std::unique_ptr<Expr> call;
         std::vector<Expr> args;
-        // параллельно args: имя именованного аргумента (A.2.9); пустое = позиционный
+        // параллельно args: имя именованного аргумента; пустое = позиционный
         std::vector<std::string_view> arg_names;
         std::size_t line = 0;   // строка вызова (для panic/assert)
     };
@@ -172,7 +174,7 @@ export namespace Parser {
     };
 
 
-    // параметр функции: имя, тип и необязательное значение по умолчанию (A.2.9)
+    // параметр функции: имя, тип и необязательное значение по умолчанию 
     struct Param {
         std::string_view name;
         TypeRef type;

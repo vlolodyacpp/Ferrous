@@ -16,6 +16,11 @@ export import Ferrous.AST;
 
 export namespace Semantic {
 
+
+    // Семантический анализатор: третья фаза pipeline. Выполняет разрешение
+    // имён, проверку типов и контроля потока, строит реестр типов и
+    // аннотированный AST (aast); диагностики возвращает в DiagBag.
+
     // идентификатор типа
     struct TypeID {
         std::uint32_t id;
@@ -152,9 +157,12 @@ export namespace Semantic {
         std::unordered_map<const Parser::Expr*, TypeID> expr_type;
         std::unordered_map<const Parser::LetStmt*, TypeID> let_type;
         std::unordered_map<const Parser::CallExpr*, std::size_t> resolved_overload;
-        // A.2.9: полный список выражений-аргументов в ПОРЯДКЕ ПАРАМЕТРОВ
-        // (позиционные/именованные на своих местах + значения по умолчанию).
+        // полный список выражений-аргументов в порядке параметров
         std::unordered_map<const Parser::CallExpr*, std::vector<const Parser::Expr*>> call_slots;
+        // типы параметров выбранной перегрузки в порядке слотов (для манглинга)
+        std::unordered_map<const Parser::CallExpr*, std::vector<TypeID>> call_slot_types;
+        // единая карта неявных приведений
+        std::unordered_map<const Parser::Expr*, std::pair<TypeID, TypeID>> coerce;
         const TypeRegistry* types = nullptr;
     };
 
@@ -232,7 +240,7 @@ export namespace Semantic {
         std::optional<TypeID> resolve_type(const Parser::TypeRef&);
 
         // фазы анализа
-        void install_builtins();                            // print/input/len/exit/panic/assert
+        void install_builtins();                                    // print/input/len/exit/panic/assert
         void pass1_declare(const std::vector<Parser::Decl>&);       // регистрация имен верхнего уровня
         void pass1_declare_types(const std::vector<Parser::Decl>&); // регистрация типов верхнего уровня
 
@@ -263,8 +271,11 @@ export namespace Semantic {
         bool is_mut_root(const Parser::Expr&) const;        // корень lvalue объявлен как mut?
 
 
-        TypeID unify_binary(TypeID, TypeID);    // общий тип операндов бинарной операции
-        bool types_compatible(TypeID, TypeID);  // совместимость (с учётом untyped)
+        // общий тип двух фиксированных операндов с учётом неявных расширений.
+        // nullopt — типы несовместимы без явного `as` 
+        std::optional<TypeID> common_type(TypeID, TypeID);
+        // проверить присваиваемость from→to в контексте присваивания
+        bool coerce_to(const Parser::Expr& src, TypeID from, TypeID to);
         bool is_unsigned(TypeID) const;         // беззнаковый целочисленный тип?
         int bit_width(TypeID) const;            // ширина типа в битах (для приведений)
         bool int_literal_fits(std::uint64_t, TypeID, bool negated = false) const;  // влезает ли литерал в целевой int (negated — литерал под унарным минусом)

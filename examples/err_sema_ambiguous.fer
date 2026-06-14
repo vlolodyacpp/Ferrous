@@ -1,0 +1,10 @@
+// @error: ambiguous call
+fn f(a: int32, b: int64) -> int32 { return 1; }
+fn f(a: int64, b: int32) -> int32 { return 2; }
+fn main() -> int32 {
+    let x: int16 = 1;
+    let y: int16 = 2;
+    // оба кандидата требуют по одному расширению int16→int32 и одному int16→int64:
+    // суммарная стоимость одинакова → неоднозначно
+    return f(x, y);
+}
